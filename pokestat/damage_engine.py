@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pokestat.calculator import calculate_all_stats
 from pokestat.models import (
     BattleField,
+    Gender,
     Move,
     MoveCategory,
     PokemonState,
@@ -303,6 +304,16 @@ def compute_effective_base_power(
     atk_item = _norm(attacker.item)
 
     # Habilidades ofensivas que escalan BP
+    if atk_ability == "rivalry":
+        # Rivalidad (Rivalry): +25% daño si atacante y defensor comparten género (M vs M o F vs F).
+        # -25% daño si son de géneros opuestos (M vs F o F vs M).
+        # Neutro (1.0x) si alguno de los dos no tiene género (Genderless / N).
+        if attacker.gender != Gender.GENDERLESS and defender.gender != Gender.GENDERLESS:
+            if attacker.gender == defender.gender:
+                bp_mod = chain_mod(bp_mod, 5120)  # x1.25 (+25%)
+            else:
+                bp_mod = chain_mod(bp_mod, 3072)  # x0.75 (-25%)
+
     if atk_ability == "technician" and move.base_power <= 60:
         bp_mod = chain_mod(bp_mod, 6144)  # x1.5
     if (ate_boost or atk_ability == "normalize"):

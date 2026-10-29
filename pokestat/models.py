@@ -228,10 +228,18 @@ class BattleField(BaseModel):
     beads_of_ruin: bool = False    # -25% SpD
 
 
+class Gender(str, Enum):
+    """Género de un Pokémon (crucial para habilidades como Rivalry / Rivalidad y movimientos como Attract)."""
+    MALE = "M"
+    FEMALE = "F"
+    GENDERLESS = "N"
+
+
 class PokemonState(BaseModel):
     """Estado completo de un Pokémon en combate (especie + configuración competitiva / Randomlocke)."""
     pokemon: Pokemon
     nickname: Optional[str] = None
+    gender: Gender = Field(default=Gender.GENDERLESS)
     level: int = Field(default=50, ge=1, le=100)
     nature: Nature = Field(default=Nature.SERIOUS)
     evs: StatSpread = Field(default_factory=StatSpread)

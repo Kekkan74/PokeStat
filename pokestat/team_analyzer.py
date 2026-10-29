@@ -7,6 +7,7 @@ from pokestat.calculator import calculate_all_stats
 from pokestat.catalog import resolve_move, resolve_pokemon
 from pokestat.damage_engine import get_effective_move_type, get_type_effectiveness
 from pokestat.models import (
+    Gender,
     IVSpread,
     Move,
     MoveCategory,
@@ -62,7 +63,7 @@ def parse_showdown_block(block: str) -> PokemonState:
     if not lines:
         raise ValueError("Bloque de Pokémon vacío.")
 
-    # Primera línea: "Apodo (Especie) (M) @ Objeto" o "Especie @ Objeto"
+    # Primera línea: "Apodo (Especie) (M) @ Objeto" o "Especie (F) @ Objeto" o "Especie @ Objeto"
     first = lines[0]
     item = None
     if "@" in first:
@@ -71,8 +72,13 @@ def parse_showdown_block(block: str) -> PokemonState:
     else:
         left = first.strip()
 
-    # Limpiar indicador de género "(M)" o "(F)"
-    left = re.sub(r"\s*\([MF]\)\s*$", "", left).strip()
+    # Detectar género "(M)" o "(F)"
+    gender = Gender.GENDERLESS
+    gender_match = re.search(r"\s*\(([MFmf])\)\s*$", left)
+    if gender_match:
+        g_val = gender_match.group(1).upper()
+        gender = Gender.MALE if g_val == "M" else Gender.FEMALE
+        left = left[:gender_match.start()].strip()
 
     nickname = None
     species_name = left
@@ -93,7 +99,15 @@ def parse_showdown_block(block: str) -> PokemonState:
 
     for ln in lines[1:]:
         low = ln.lower()
-        if low.startswith("ability:"):
+        if low.startswith("gender:"):
+            g_raw = ln.split(":", 1)[1].strip().upper()
+            if g_raw in ("M", "MALE"):
+                gender = Gender.MALE
+            elif g_raw in ("F", "FEMALE"):
+                gender = Gender.FEMALE
+            else:
+                gender = Gender.GENDERLESS
+        elif low.startswith("ability:"):
             ability = ln.split(":", 1)[1].strip()
         elif low.startswith("level:"):
             try:
@@ -144,6 +158,7 @@ def parse_showdown_block(block: str) -> PokemonState:
     return PokemonState(
         pokemon=poke,
         nickname=nickname,
+        gender=gender,
         level=level,
         nature=nature,
         evs=evs,
@@ -183,6 +198,8 @@ def load_team_from_file(path: str | Path) -> list[PokemonState]:
             team.append(
                 PokemonState(
                     pokemon=poke,
+                    nickname=entry.get("nickname"),
+                    gender=Gender(entry.get("gender", "N")),
                     level=entry.get("level", 50),
                     nature=Nature(entry.get("nature", "Serious")),
                     evs=evs,

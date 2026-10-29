@@ -19,6 +19,7 @@ from pokestat.damage_engine import (
 )
 from pokestat.models import (
     BattleField,
+    Gender,
     Move,
     MoveCategory,
     Nature,
@@ -75,6 +76,15 @@ TYPE_STYLES: dict[PokemonType, str] = {
     PokemonType.FAIRY: "bold black on rgb(214,133,173)",
     PokemonType.STELLAR: "bold white on rgb(64,181,165)",
 }
+
+
+def _gender_badge(gender: Gender) -> str:
+    """Badge de género visual con colores estándar."""
+    if gender == Gender.MALE:
+        return "[bold bright_blue]♂ M[/bold bright_blue]"
+    elif gender == Gender.FEMALE:
+        return "[bold bright_magenta]♀ F[/bold bright_magenta]"
+    return "[dim]⚲ N[/dim]"
 
 
 def _type_badge(ptype: PokemonType, short: bool = False) -> str:
@@ -199,9 +209,19 @@ def _render_pokemon_member_card(idx: int, state: PokemonState) -> Panel:
         + "\n".join(moves_lines)
     )
 
+    # Formateo de título con Apodo y Género
+    title_parts = [f"#{idx}"]
+    if state.nickname:
+        title_parts.append(f'"{state.nickname}" ({state.pokemon.name})')
+    else:
+        title_parts.append(state.pokemon.name)
+    title_parts.append(_gender_badge(state.gender))
+    title_parts.append(f"[dim](Nvl {state.level})[/dim]")
+    card_title = f"[bold bright_white]{' '.join(title_parts)}[/bold bright_white]"
+
     return Panel(
         body,
-        title=f"[bold bright_white]#{idx} {state.pokemon.name}[/bold bright_white] [dim](Nvl {state.level})[/dim]",
+        title=card_title,
         border_style="bright_blue",
         box=box.ROUNDED,
         expand=True,
@@ -243,7 +263,9 @@ def render_team_dashboard(report: TeamAnalysisReport, source_label: str = "") ->
     )
     def_table.add_column("Tipo Atacante", justify="left")
     for m in team:
-        short_name = m.pokemon.name[:10]
+        display_label = m.nickname if m.nickname else m.pokemon.name
+        g_sym = "♂" if m.gender == Gender.MALE else ("♀" if m.gender == Gender.FEMALE else "⚲")
+        short_name = f"{display_label[:8]} {g_sym}"
         def_table.add_column(short_name, justify="center")
     def_table.add_column("Balance", justify="right")
 
@@ -397,8 +419,9 @@ def _render_matchup_cards(
     atk_boost = attacker.stat_boosts.get(atk_stat_key, 0)
     boost_str = f" [bold yellow]({atk_boost:+d})[/bold yellow]" if atk_boost else ""
 
+    atk_disp_name = f'"{attacker.nickname}" ({attacker.pokemon.name})' if attacker.nickname else attacker.pokemon.name
     atk_card = Panel(
-        f"[bold white]{attacker.pokemon.name}[/bold white] [dim](Nvl {attacker.level})[/dim]\n"
+        f"[bold white]{atk_disp_name}[/bold white] {_gender_badge(attacker.gender)} [dim](Nvl {attacker.level})[/dim]\n"
         f"Tipos: {atk_badges}\n"
         f"Stat Ofensivo: [bold bright_red]{atk_stats[atk_stat_key]} {atk_stat_key.value.upper()}[/bold bright_red] "
         f"({attacker.evs.get(atk_stat_key)} EVs, {attacker.nature.value}){boost_str}\n"
@@ -431,8 +454,9 @@ def _render_matchup_cards(
         else f"[bold bright_green]{defender.ability or 'Ninguna / Neutra'}[/bold bright_green]"
     )
     bs = defender.pokemon.base_stats
+    def_disp_name = f'"{defender.nickname}" ({defender.pokemon.name})' if defender.nickname else defender.pokemon.name
     def_card = Panel(
-        f"[bold white]{defender.pokemon.name}[/bold white] [dim](Nvl {defender.level})[/dim]\n"
+        f"[bold white]{def_disp_name}[/bold white] {_gender_badge(defender.gender)} [dim](Nvl {defender.level})[/dim]\n"
         f"Tipos: {def_badges}\n"
         f"Base Bulk: [bold cyan]{bs.hp} HP / {bs.def_} Def / {bs.spd} SpD[/bold cyan]\n"
         f"Habilidad: {def_ab_str}\n"
@@ -496,8 +520,10 @@ def _render_showdown_export(defender: PokemonState, cand: OptimizationCandidate)
     ev_line = " / ".join(ev_parts) if ev_parts else "0 HP"
 
     lines = []
+    header_name = f"{defender.nickname} ({defender.pokemon.name})" if defender.nickname else defender.pokemon.name
+    gender_suffix = f" ({defender.gender.value})" if defender.gender != Gender.GENDERLESS else ""
     item_suffix = f" @ {defender.item}" if defender.item else ""
-    lines.append(f"[bold bright_white]{defender.pokemon.name}{item_suffix}[/bold bright_white]")
+    lines.append(f"[bold bright_white]{header_name}{gender_suffix}{item_suffix}[/bold bright_white]")
     if defender.ability:
         lines.append(f"[cyan]Ability:[/cyan] {defender.ability}")
     lines.append(f"[cyan]Level:[/cyan] {defender.level}")
@@ -769,7 +795,9 @@ def _interactive_team_loop(team: list[PokemonState], current_format: TeamFormat,
         if choice == "1":
             console.print(Rule("[bold bright_blue]SELECCIONA EL POKÉMON DE TU EQUIPO A OPTIMIZAR[/bold bright_blue]"))
             for idx, m in enumerate(team, start=1):
-                console.print(f"  [bold cyan][{idx}][/bold cyan] {m.pokemon.name} ({m.nature.value}, Objeto: {m.item or 'Ninguno'}, Habilidad: {m.ability or 'Ninguna'})")
+                name_lbl = f'"{m.nickname}" ({m.pokemon.name})' if m.nickname else m.pokemon.name
+                g_str = f"[{m.gender.value}]" if m.gender != Gender.GENDERLESS else "[N]"
+                console.print(f"  [bold cyan][{idx}][/bold cyan] {name_lbl} {g_str} ({m.nature.value}, Objeto: {m.item or 'Ninguno'}, Habilidad: {m.ability or 'Ninguna'})")
             valid_indices = [str(i) for i in range(1, len(team) + 1)]
             sel_idx = int(Prompt.ask("Número de Pokémon", choices=valid_indices, default="1")) - 1
             defender_member = team[sel_idx]
@@ -880,6 +908,11 @@ def optimize_def_command(
         "-t",
         help="Objetivo de supervivencia: survive-1-hit (evitar OHKO), survive-2-hits (evitar 2HKO), survive-3-hits.",
     ),
+    gender_attacker: Gender = typer.Option(
+        Gender.GENDERLESS,
+        "--gender-attacker",
+        help="Género del atacante: 'M' (Macho), 'F' (Hembra) o 'N' (Sin género). Relevante para Rivalidad.",
+    ),
     nature_attacker: Nature = typer.Option(
         Nature.ADAMANT,
         "--nature-attacker",
@@ -898,6 +931,11 @@ def optimize_def_command(
     statused_attacker: bool = typer.Option(False, "--statused-attacker", help="Si el atacante tiene un problema de estado (para Guts, Toxic Boost)."),
     attacker_types: Optional[str] = typer.Option(None, "--attacker-types", help="Sobrescribir tipos del atacante separados por coma (ej. 'Dragon,Flying')."),
     attacker_stats: Optional[str] = typer.Option(None, "--attacker-stats", help="Sobrescribir Base Stats del atacante: 'HP,Atk,Def,SpA,SpD,Spe'."),
+    gender_defender: Gender = typer.Option(
+        Gender.GENDERLESS,
+        "--gender-defender",
+        help="Género del defensor: 'M' (Macho), 'F' (Hembra) o 'N' (Sin género). Relevante para Rivalidad.",
+    ),
     item_defender: Optional[str] = typer.Option(None, "--item-defender", help="Objeto del defensor (ej. 'Assault Vest', 'Eviolite', 'Ability Shield')."),
     ability_defender: Optional[str] = typer.Option(
         None,
@@ -954,6 +992,7 @@ def optimize_def_command(
 
     attacker_state = PokemonState(
         pokemon=atk_poke,
+        gender=gender_attacker,
         level=level,
         nature=nature_attacker,
         evs=atk_ev_spread,
@@ -968,6 +1007,7 @@ def optimize_def_command(
 
     defender_state = PokemonState(
         pokemon=def_poke,
+        gender=gender_defender,
         level=level,
         item=item_defender,
         ability=ability_defender,
