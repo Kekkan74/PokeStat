@@ -332,7 +332,82 @@ def render_team_dashboard(report: TeamAnalysisReport, source_label: str = "") ->
     mid_grid.add_row(sp_table, cov_panel)
     console.print(mid_grid)
 
-    # 4. Panel de Diagnóstico de Equilibrio y Propuestas de Mejora
+    # 4. Sección especial: Vulnerabilidad FÍSICA vs ESPECIAL y Tipos más Peligrosos
+    phys_col = "bright_red"
+    spec_col = "bright_magenta"
+    diff_val = report.bulk_differential_pct
+    diff_desc = f"+{diff_val}% SpD" if diff_val > 0 else f"{diff_val}% Def"
+    bulk_verdict_col = (
+        "bright_green"
+        if "EQUILIBRADO" in report.bulk_orientation_verdict
+        else ("gold1" if "FÍSICOS" in report.bulk_orientation_verdict else "bright_magenta")
+    )
+
+    phys_fragile_str = (
+        ", ".join(f"{p[0]} (Def {p[2]})" for p in report.physically_fragile_members)
+        if report.physically_fragile_members
+        else "[green]Ninguno (Gran bulk físico en todo el equipo)[/green]"
+    )
+    spec_fragile_str = (
+        ", ".join(f"{p[0]} (SpD {p[2]})" for p in report.specially_fragile_members)
+        if report.specially_fragile_members
+        else "[green]Ninguno (Gran bulk especial en todo el equipo)[/green]"
+    )
+
+    bulk_body = (
+        f"Diagnóstico de Resistencia Mixta: [bold {bulk_verdict_col}]{report.bulk_orientation_verdict}[/bold {bulk_verdict_col}]\n"
+        f"• Defensa Física Media: [bold {phys_col}]{report.avg_team_def}[/bold {phys_col}]  "
+        f"{_stat_bar(int(report.avg_team_def), max_scale=180, width=12, color=phys_col)}\n"
+        f"• Defensa Especial Media: [bold {spec_col}]{report.avg_team_spd}[/bold {spec_col}]  "
+        f"{_stat_bar(int(report.avg_team_spd), max_scale=180, width=12, color=spec_col)}  [dim]({diff_desc})[/dim]\n\n"
+        f"[bold yellow]Miembros vulnerables a Físico:[/bold yellow] [dim]{phys_fragile_str}[/dim]\n"
+        f"[bold cyan]Miembros vulnerables a Especial:[/bold cyan] [dim]{spec_fragile_str}[/dim]"
+    )
+
+    bulk_panel = Panel(
+        bulk_body,
+        title="⚔️ Vulnerabilidad ante Atacante Físico vs Especial",
+        border_style="bright_yellow",
+        box=box.ROUNDED,
+        expand=True,
+    )
+
+    # Ranking de Tipos más peligrosos (ante qué tipos eres más débil)
+    type_threat_lines = []
+    for rank, (t, weak_cnt, res_cnt) in enumerate(report.top_weakness_types[:4], start=1):
+        warn_style = "bold bright_red" if weak_cnt >= 3 else "bold yellow"
+        type_threat_lines.append(
+            f"[dim]#{rank}[/dim] {_type_badge(t, short=True)} ➔ [{warn_style}]{weak_cnt} débiles[/{warn_style}] / [green]{res_cnt} res-inm[/green]"
+        )
+    if not type_threat_lines:
+        type_threat_lines.append("[bold bright_green]¡Sin debilidades acumuladas destacadas![/bold bright_green]")
+
+    res_lines = []
+    for rank, (t, cnt) in enumerate(report.top_resistance_types[:4], start=1):
+        res_lines.append(f"[dim]#{rank}[/dim] {_type_badge(t, short=True)} ➔ [bold bright_green]{cnt} Pokémon resisten/inmunes[/bold bright_green]")
+
+    type_threat_body = (
+        "[bold red]Tipos más peligrosos (mayor acumulación de debilidades):[/bold red]\n"
+        + "\n".join(type_threat_lines)
+        + "\n\n[bold green]Tipos mejor cubiertos (mayor resistencia/inmunidad):[/bold green]\n"
+        + "\n".join(res_lines)
+    )
+
+    type_threat_panel = Panel(
+        type_threat_body,
+        title="⚠️ Tipos ante los que eres más Débil / Fuerte",
+        border_style="red",
+        box=box.ROUNDED,
+        expand=True,
+    )
+
+    threat_grid = Table.grid(expand=True, padding=(0, 1))
+    threat_grid.add_column(ratio=1)
+    threat_grid.add_column(ratio=1)
+    threat_grid.add_row(bulk_panel, type_threat_panel)
+    console.print(threat_grid)
+
+    # 5. Panel de Diagnóstico de Equilibrio y Propuestas de Mejora
     score = report.balance_score
     score_color = "bright_green" if score >= 85 else ("gold1" if score >= 70 else "bright_red")
     score_bar = _hp_bar(score, 100, width=25).replace("HP", "Pts")

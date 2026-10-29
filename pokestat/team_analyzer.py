@@ -239,11 +239,20 @@ class TeamAnalysisReport:
     balance_score: int  # 0..100
     verdict_label: str
     defensive_matrix: dict[PokemonType, TypeDefenseSummary]
+    top_weakness_types: list[tuple[PokemonType, int, int]]  # (Tipo, cant_debiles, cant_resistencias_o_inmunidades)
+    top_resistance_types: list[tuple[PokemonType, int]]     # (Tipo, cant_resistencias_o_inmunidades)
     offensive_super_effective_coverage: set[PokemonType]
     uncovered_offensive_types: list[PokemonType]
     speed_tiers: list[tuple[str, int, str]]  # (Nombre, Spe real, Naturaleza/EVs)
     physical_attackers: int
     special_attackers: int
+    # Auditoría Física vs Especial
+    avg_team_def: float
+    avg_team_spd: float
+    physically_fragile_members: list[tuple[str, int, int]]  # (Nombre, HP, Def)
+    specially_fragile_members: list[tuple[str, int, int]]   # (Nombre, HP, SpD)
+    bulk_orientation_verdict: str  # e.g. "Equilibrado", "Más vulnerable a Físico", "Más vulnerable a Especial"
+    bulk_differential_pct: float
     strengths: list[str]
     warnings: list[str]
     recommendations: list[str]
@@ -319,11 +328,92 @@ def analyze_team(team: list[PokemonState], team_format: TeamFormat = TeamFormat.
         speed_tiers.append((member.pokemon.name, spe_val, f"{member.evs.spe} EVs ({member.nature.value}{sign})"))
     speed_tiers.sort(key=lambda x: x[1], reverse=True)
 
-    # Auditoría de Fortalezas, Alertas y Recomendaciones según Formato (6v6 vs Dúos)
+    # Inicializar listas de diagnóstico
     score = 100
     strengths: list[str] = []
     warnings: list[str] = []
     recommendations: list[str] = []
+
+    # Auditoría Física vs Especial (Defensa vs Defensa Especial real a Nivel 50)
+    total_def = 0
+    total_spd = 0
+    phys_fragile: list[tuple[str, int, int]] = []
+    spec_fragile: list[tuple[str, int, int]] = []
+
+    for member in team:
+        m_stats = calculate_all_stats(member)
+        hp_v = m_stats[StatName.HP]
+        def_v = m_stats[StatName.DEF]
+        spd_v = m_stats[StatName.SPD]
+
+        # Considerar si el Pokémon lleva Assault Vest (x1.5 SpD) o Eviolite (x1.5 Def y SpD)
+        it_norm = (member.item or "").strip().lower()
+        eff_def = def_v
+        eff_spd = spd_v
+        if it_norm == "assault vest":
+            eff_spd = int(eff_spd * 1.5)
+        elif it_norm == "eviolite":
+            eff_def = int(eff_def * 1.5)
+            eff_spd = int(eff_spd * 1.5)
+
+        # Si tiene habilidad Fur Coat (x2 Def) o Ice Scales (x2 bulk especial)
+        ab_norm = (member.ability or "").strip().lower()
+        if ab_norm == "fur coat":
+            eff_def *= 2
+        elif ab_norm == "ice scales":
+            eff_spd *= 2
+
+        total_def += eff_def
+        total_spd += eff_spd
+
+        disp_n = member.nickname if member.nickname else member.pokemon.name
+        # Umbral de fragilidad a nivel 50 (Bulk < 100 de stat o producto HP*Def < 14000)
+        if eff_def < 100 or (hp_v * eff_def < 14000):
+            phys_fragile.append((disp_n, hp_v, eff_def))
+        if eff_spd < 100 or (hp_v * eff_spd < 14000):
+            spec_fragile.append((disp_n, hp_v, eff_spd))
+
+    n_members = max(1, len(team))
+    avg_def = round(total_def / n_members, 1)
+    avg_spd = round(total_spd / n_members, 1)
+    diff_pct = round(((avg_spd - avg_def) / max(1.0, avg_def)) * 100, 1)
+
+    if diff_pct >= 12.0:
+        bulk_verdict = "MÁS VULNERABLE A ATACANTES FÍSICOS"
+        warnings.append(
+            f"Desequilibrio defensivo físico/especial: la defensa física media del equipo ({avg_def}) es un {abs(diff_pct)}% inferior a la especial ({avg_spd})."
+        )
+        recommendations.append(
+            f"El equipo sufre más frente a Atacantes Físicos (ej. Urshifu, Chien-Pao, Dragonite, Great Tusk). Considera potenciar la Def física de los miembros más frágiles: {', '.join(p[0] for p in phys_fragile)} o añadir Intimidate / Will-O-Wisp / Reflect."
+        )
+        score -= 6
+    elif diff_pct <= -12.0:
+        bulk_verdict = "MÁS VULNERABLE A ATACANTES ESPECIALES"
+        warnings.append(
+            f"Desequilibrio defensivo físico/especial: la defensa especial media del equipo ({avg_spd}) es un {abs(diff_pct)}% inferior a la física ({avg_def})."
+        )
+        recommendations.append(
+            f"El equipo sufre más frente a Atacantes Especiales (ej. Flutter Mane, Chi-Yu, Miraidon, Bloodmoon Ursaluna). Considera equipar un Assault Vest, aumentar SpD en los miembros frágiles: {', '.join(p[0] for p in spec_fragile)} o añadir Light Screen / Snarl."
+        )
+        score -= 6
+    else:
+        bulk_verdict = "EQUILIBRADO ENTRE FÍSICO Y ESPECIAL"
+        strengths.append(
+            f"Excelente balance defensivo mixto: el equipo resiste de forma pareja tanto a atacantes Físicos (Def media: {avg_def}) como Especiales (SpD media: {avg_spd})."
+        )
+
+    # Ranking de Tipos más débiles y más resistidos
+    weakness_ranking: list[tuple[PokemonType, int, int]] = []
+    resistance_ranking: list[tuple[PokemonType, int]] = []
+    for t, summ in defensive_matrix.items():
+        if summ.weak_count > 0:
+            weakness_ranking.append((t, summ.weak_count, summ.resist_count + summ.immune_count))
+        if (summ.resist_count + summ.immune_count) > 0:
+            resistance_ranking.append((t, summ.resist_count + summ.immune_count))
+
+    # Ordenar tipos débiles por mayor cantidad de débiles y menor cantidad de resistencias
+    weakness_ranking.sort(key=lambda x: (x[1], -x[2]), reverse=True)
+    resistance_ranking.sort(key=lambda x: x[1], reverse=True)
 
     # 1. Revisión de agujeros defensivos (Tipos donde >=3 miembros son débiles o hay >=2 débiles sin ninguna resistencia/inmunidad)
     severe_weaknesses: list[PokemonType] = []
@@ -500,11 +590,19 @@ def analyze_team(team: list[PokemonState], team_format: TeamFormat = TeamFormat.
         balance_score=score,
         verdict_label=verdict,
         defensive_matrix=defensive_matrix,
+        top_weakness_types=weakness_ranking,
+        top_resistance_types=resistance_ranking,
         offensive_super_effective_coverage=covered_types,
         uncovered_offensive_types=uncovered,
         speed_tiers=speed_tiers,
         physical_attackers=phys_count,
         special_attackers=spec_count,
+        avg_team_def=avg_def,
+        avg_team_spd=avg_spd,
+        physically_fragile_members=phys_fragile,
+        specially_fragile_members=spec_fragile,
+        bulk_orientation_verdict=bulk_verdict,
+        bulk_differential_pct=diff_pct,
         strengths=strengths,
         warnings=warnings,
         recommendations=recommendations,
