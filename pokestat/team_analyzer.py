@@ -72,6 +72,8 @@ def parse_showdown_block(block: str) -> PokemonState:
     else:
         left = first.strip()
 
+    left = left.strip()
+
     # Detectar género "(M)" o "(F)"
     gender = Gender.GENDERLESS
     gender_match = re.search(r"\s*\(([MFmf])\)\s*$", left)
@@ -81,8 +83,8 @@ def parse_showdown_block(block: str) -> PokemonState:
         left = left[:gender_match.start()].strip()
 
     nickname = None
-    species_name = left
-    paren_match = re.match(r"^(.+?)\s*\(([^()]+)\)$", left)
+    species_name = left.strip()
+    paren_match = re.match(r"^(.+?)\s*\(([^()]+)\)\s*$", left)
     if paren_match:
         nickname = paren_match.group(1).strip()
         species_name = paren_match.group(2).strip()

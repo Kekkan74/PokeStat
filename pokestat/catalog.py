@@ -1,4 +1,34 @@
+import json
+import os
+from pathlib import Path
+import re
 from pokestat.models import BaseStat, Move, MoveCategory, Pokemon, PokemonType, StatName
+
+# Carga de la Pokédex oficial de Pokémon Showdown (1.500+ especies y formas)
+_DATA_DIR = Path(__file__).parent / "data"
+_SHOWDOWN_DEX: dict = {}
+_SHOWDOWN_MOVES: dict = {}
+
+_pokedex_path = _DATA_DIR / "pokedex.json"
+if _pokedex_path.exists():
+    try:
+        with open(_pokedex_path, "r", encoding="utf-8") as f:
+            _SHOWDOWN_DEX = json.load(f)
+    except Exception:
+        _SHOWDOWN_DEX = {}
+
+_moves_path = _DATA_DIR / "moves.json"
+if _moves_path.exists():
+    try:
+        with open(_moves_path, "r", encoding="utf-8") as f:
+            _SHOWDOWN_MOVES = json.load(f)
+    except Exception:
+        _SHOWDOWN_MOVES = {}
+
+
+def to_id(text: str) -> str:
+    """Normaliza nombres al formato estándar de ID de Pokémon Showdown (solo letras minúsculas y números)."""
+    return re.sub(r"[^a-z0-9]", "", str(text).lower())
 
 # Catálogo base de especies competitivas y de uso común (ampliable o personalizable por CLI)
 POKEMON_CATALOG: dict[str, Pokemon] = {
@@ -644,25 +674,28 @@ def resolve_pokemon(
     custom_base_stats: str | None = None,
 ) -> Pokemon:
     """
-    Resuelve un Pokémon del catálogo o lo construye al vuelo si se pasan stats/tipos
-    personalizados (ideal para Randomlockes con stats/tipos randomizados o especies no listadas).
-    Formato custom_types: "Ghost,Fairy" o "Fire"
-    Formato custom_base_stats: "55,55,55,135,135,135" (HP,Atk,Def,SpA,SpD,Spe)
+    Resuelve un Pokémon buscando primero en la Pokédex completa de Showdown (1.500+ especies),
+    luego en el catálogo local y finalmente soporta creación al vuelo para Randomlocke.
     """
-    key = name.strip().lower()
+    clean_name = name.strip()
+    dex_id = to_id(clean_name)
+    key = clean_name.lower()
+
+    # 1. Búsqueda en Pokédex oficial de Showdown
+    sd_entry = _SHOWDOWN_DEX.get(dex_id)
+
+    # 2. Búsqueda en catálogo local
     base_poke = POKEMON_CATALOG.get(key)
 
-    if base_poke is None and (custom_types is None or custom_base_stats is None):
-        available = ", ".join(sorted(p.name for p in POKEMON_CATALOG.values()))
-        raise ValueError(
-            f"Pokémon '{name}' no encontrado en el catálogo integrado. "
-            f"Puedes especificar cualquier Pokémon usando --defender-types / --defender-stats "
-            f"(o --attacker-types / --attacker-stats). Catálogo incluido: {available}"
-        )
+    types: list[PokemonType] = []
+    b_stats: BaseStat | None = None
 
-    types = base_poke.types if base_poke else []
     if custom_types:
         types = [PokemonType(t.strip().capitalize()) for t in custom_types.split(",") if t.strip()]
+    elif sd_entry and "types" in sd_entry:
+        types = [PokemonType(t.strip().capitalize()) for t in sd_entry["types"] if t.strip() in PokemonType._value2member_map_]
+    elif base_poke:
+        types = base_poke.types
 
     if custom_base_stats:
         parts = [int(x.strip()) for x in custom_base_stats.split(",")]
@@ -676,11 +709,27 @@ def resolve_pokemon(
             spd=parts[4],
             spe=parts[5],
         )
-    else:
-        assert base_poke is not None
+    elif sd_entry and "baseStats" in sd_entry:
+        bs_raw = sd_entry["baseStats"]
+        b_stats = BaseStat(
+            hp=int(bs_raw.get("hp", 80)),
+            atk=int(bs_raw.get("atk", 80)),
+            **{"def": int(bs_raw.get("def", 80))},
+            spa=int(bs_raw.get("spa", 80)),
+            spd=int(bs_raw.get("spd", 80)),
+            spe=int(bs_raw.get("spe", 80)),
+        )
+    elif base_poke:
         b_stats = base_poke.base_stats
 
-    return Pokemon(name=name if not base_poke else base_poke.name, types=types, base_stats=b_stats)
+    # Fallback si no está en ningún catálogo y no dio datos
+    if not types:
+        types = [PokemonType.NORMAL]
+    if not b_stats:
+        b_stats = BaseStat(hp=80, atk=80, **{"def": 80}, spa=80, spd=80, spe=80)
+
+    final_name = sd_entry.get("name") if sd_entry else (base_poke.name if base_poke else clean_name)
+    return Pokemon(name=final_name, types=types, base_stats=b_stats)
 
 
 def resolve_move(
@@ -699,60 +748,72 @@ def resolve_move(
     has_secondary: bool = False,
 ) -> Move:
     """
-    Resuelve un movimiento del catálogo o permite crear/sobreescribir cualquier ataque
-    personalizado al vuelo para Randomlocke.
+    Resuelve un movimiento buscando en la base de datos de Showdown (950+ movimientos),
+    en el catálogo local o creándolo al vuelo si es inventado/personalizado.
     """
-    key = name.strip().lower()
+    clean_name = name.strip()
+    move_id = to_id(clean_name)
+    key = clean_name.lower()
+
+    sd_move = _SHOWDOWN_MOVES.get(move_id)
     base_move = MOVE_CATALOG.get(key)
 
-    if base_move is None and (move_type is None or move_category is None or move_bp is None):
-        return Move(
-            name=name.strip(),
-            type=move_type or PokemonType.NORMAL,
-            category=move_category or MoveCategory.PHYSICAL,
-            base_power=move_bp if move_bp is not None else 80,
-            is_spread=bool(is_spread),
-            makes_contact=makes_contact,
-            is_punch=is_punch,
-            is_biting=is_biting,
-            is_slicing=is_slicing,
-            is_sound=is_sound,
-            is_pulse=is_pulse,
-            is_recoil=is_recoil,
-            has_secondary_effect=has_secondary,
-        )
+    # Determinar tipo
+    final_type = move_type
+    if not final_type:
+        if sd_move and sd_move.get("type") in PokemonType._value2member_map_:
+            final_type = PokemonType(sd_move["type"])
+        elif base_move:
+            final_type = base_move.type
+        else:
+            final_type = PokemonType.NORMAL
 
-    if base_move is not None:
-        return base_move.model_copy(
-            update={
-                "type": move_type or base_move.type,
-                "category": move_category or base_move.category,
-                "base_power": move_bp if move_bp is not None else base_move.base_power,
-                "is_spread": is_spread if is_spread is not None else base_move.is_spread,
-                "makes_contact": makes_contact or base_move.makes_contact,
-                "is_punch": is_punch or base_move.is_punch,
-                "is_biting": is_biting or base_move.is_biting,
-                "is_slicing": is_slicing or base_move.is_slicing,
-                "is_sound": is_sound or base_move.is_sound,
-                "is_pulse": is_pulse or base_move.is_pulse,
-                "is_recoil": is_recoil or base_move.is_recoil,
-                "has_secondary_effect": has_secondary or base_move.has_secondary_effect,
-            }
-        )
+    # Determinar categoría
+    final_cat = move_category
+    if not final_cat:
+        if sd_move and sd_move.get("category") in MoveCategory._value2member_map_:
+            final_cat = MoveCategory(sd_move["category"])
+        elif base_move:
+            final_cat = base_move.category
+        else:
+            final_cat = MoveCategory.PHYSICAL
 
-    assert move_type is not None and move_category is not None and move_bp is not None
+    # Determinar base power
+    final_bp = move_bp
+    if final_bp is None:
+        if sd_move and "basePower" in sd_move:
+            final_bp = int(sd_move["basePower"])
+        elif base_move:
+            final_bp = base_move.base_power
+        else:
+            final_bp = 80 if final_cat != MoveCategory.STATUS else 0
+
+    # Flags especiales de Showdown
+    flags = sd_move.get("flags", {}) if sd_move else {}
+    target_type = sd_move.get("target", "") if sd_move else ""
+    is_spread_final = is_spread if is_spread is not None else (target_type in ("allAdjacent", "allAdjacentFoes", "all") or (base_move.is_spread if base_move else False))
+
+    contact_final = makes_contact or ("contact" in flags) or (base_move.makes_contact if base_move else False)
+    punch_final = is_punch or ("punch" in flags) or (base_move.is_punch if base_move else False)
+    biting_final = is_biting or ("bite" in flags) or (base_move.is_biting if base_move else False)
+    slicing_final = is_slicing or ("slicing" in flags) or (base_move.is_slicing if base_move else False)
+    sound_final = is_sound or ("sound" in flags) or (base_move.is_sound if base_move else False)
+    pulse_final = is_pulse or ("pulse" in flags) or (base_move.is_pulse if base_move else False)
+
+    final_name = sd_move.get("name") if sd_move else (base_move.name if base_move else clean_name)
+
     return Move(
-        name=name,
-        type=move_type,
-        category=move_category,
-        base_power=move_bp,
-        is_spread=bool(is_spread),
-        makes_contact=makes_contact,
-        is_punch=is_punch,
-        is_biting=is_biting,
-        is_slicing=is_slicing,
-        is_sound=is_sound,
-        is_pulse=is_pulse,
-        is_recoil=is_recoil,
-        has_secondary_effect=has_secondary,
+        name=final_name,
+        type=final_type,
+        category=final_cat,
+        base_power=final_bp,
+        is_spread=is_spread_final,
+        makes_contact=contact_final,
+        is_punch=punch_final,
+        is_biting=biting_final,
+        is_slicing=slicing_final,
+        is_sound=sound_final,
+        is_pulse=pulse_final,
+        is_recoil=is_recoil or (base_move.is_recoil if base_move else False),
+        has_secondary_effect=has_secondary or (bool(sd_move.get("secondary")) if sd_move else False) or (base_move.has_secondary_effect if base_move else False),
     )
