@@ -231,6 +231,7 @@ class BattleField(BaseModel):
 class PokemonState(BaseModel):
     """Estado completo de un Pokémon en combate (especie + configuración competitiva / Randomlocke)."""
     pokemon: Pokemon
+    nickname: Optional[str] = None
     level: int = Field(default=50, ge=1, le=100)
     nature: Nature = Field(default=Nature.SERIOUS)
     evs: StatSpread = Field(default_factory=StatSpread)
@@ -248,6 +249,7 @@ class PokemonState(BaseModel):
         default=True,
         description="True si está al 100% de vida (para Multiscale / Shadow Shield).",
     )
+    moves: list["Move"] = Field(default_factory=list, max_length=4)
     stat_boosts: dict[StatName, int] = Field(default_factory=dict)
 
 

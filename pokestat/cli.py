@@ -1,3 +1,4 @@
+from pathlib import Path
 import sys
 from typing import Optional
 import typer
@@ -29,6 +30,13 @@ from pokestat.models import (
     Weather,
 )
 from pokestat.optimizer import OptimizationCandidate, SurvivalTarget, optimize_defense
+from pokestat.team_analyzer import (
+    CORE_TYPES,
+    TeamAnalysisReport,
+    TeamFormat,
+    analyze_team,
+    load_team_from_file,
+)
 
 # Forzar salida UTF-8 en terminales de Windows para que bordes redondeados y símbolos se vean nítidos
 if hasattr(sys.stdout, "reconfigure"):
@@ -39,7 +47,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 app = typer.Typer(
     name="pokestat",
-    help="Optimizador matemático de EVs y Naturalezas para Pokémon Competitivo (Gen 9) y Randomlocke.",
+    help="Analizador Visual de Equipos (6v6 / Dúos) y Optimizador Matemático de EVs para Pokémon Gen 9 & Randomlocke.",
     add_completion=False,
     invoke_without_command=True,
 )
@@ -69,9 +77,10 @@ TYPE_STYLES: dict[PokemonType, str] = {
 }
 
 
-def _type_badge(ptype: PokemonType) -> str:
+def _type_badge(ptype: PokemonType, short: bool = False) -> str:
     style = TYPE_STYLES.get(ptype, "bold white on blue")
-    return f"[{style}] {ptype.value.upper()} [/{style}]"
+    label = ptype.value[:3].upper() if short else ptype.value.upper()
+    return f"[{style}] {label} [/{style}]"
 
 
 def _hp_bar(current_hp: int, max_hp: int, width: int = 24) -> str:
@@ -107,11 +116,17 @@ def _ev_meter(spent: int, total: int = 508, width: int = 20) -> str:
     )
 
 
+def _stat_bar(stat_val: int, max_scale: int = 220, width: int = 10, color: str = "bright_cyan") -> str:
+    ratio = max(0.05, min(1.0, stat_val / max_scale))
+    filled = round(ratio * width)
+    return f"[{color}]{'█' * filled}[/{color}][grey23]{'░' * (width - filled)}[/grey23]"
+
+
 def _render_header() -> Panel:
     title = Text()
     title.append("⚡ POKESTAT ", style="bold bright_yellow")
-    title.append("GEN 9 & RANDOMLOCKE EV OPTIMIZER", style="bold bright_white")
-    subtitle = Text("Motor Matemático Exacto (Escala 4096) • Min(EV_HP + EV_DEF) s.a. Max_Dmg < HP", style="dim cyan")
+    title.append("TEAM AUDITOR & EV OPTIMIZER (GEN 9 / RANDOMLOCKE)", style="bold bright_white")
+    subtitle = Text("Visor Táctico de Equipos (Dúos VGC & 6v6 Singles) • Diagnóstico de Equilibrio • Motor Exacto 4096", style="dim cyan")
     return Panel(
         Align.center(Group(title, subtitle)),
         box=box.DOUBLE_EDGE,
@@ -119,6 +134,221 @@ def _render_header() -> Panel:
         padding=(0, 2),
     )
 
+
+# ============================================================================
+# RENDERIZADO VISUAL DE EQUIPO COMPLETO Y AUDITORÍA (6v6 vs DÚOS)
+# ============================================================================
+
+def _render_pokemon_member_card(idx: int, state: PokemonState) -> Panel:
+    """Construye una tarjeta visual rica para un Pokémon del equipo (Stats reales, EVs, Naturaleza, Moves)."""
+    stats = calculate_all_stats(state)
+    badges = " ".join(_type_badge(t) for t in state.pokemon.types)
+    if state.tera_type:
+        badges += f" [dim]│[/dim] [bold magenta]Tera:[/bold magenta] {_type_badge(state.tera_type, short=True)}"
+
+    stat_colors = {
+        StatName.HP: "bright_green",
+        StatName.ATK: "bright_red",
+        StatName.DEF: "bright_yellow",
+        StatName.SPA: "bright_magenta",
+        StatName.SPD: "bright_cyan",
+        StatName.SPE: "bright_white",
+    }
+    stat_labels = {
+        StatName.HP: "HP ",
+        StatName.ATK: "Atk",
+        StatName.DEF: "Def",
+        StatName.SPA: "SpA",
+        StatName.SPD: "SpD",
+        StatName.SPE: "Spe",
+    }
+
+    stat_lines = []
+    for st in StatName:
+        val = stats[st]
+        ev = state.evs.get(st)
+        mod = state.nature.get_modifier(st)
+        nat_sym = "[bold bright_green]+[/bold bright_green]" if mod > 1.0 else ("[bold bright_red]-[/bold bright_red]" if mod < 1.0 else " ")
+        ev_str = f"[yellow]{ev:>3} EV[/yellow]" if ev > 0 else "[dim]  0 EV[/dim]"
+        bar = _stat_bar(val, max_scale=230 if st == StatName.HP else 210, width=8, color=stat_colors[st])
+        stat_lines.append(f"[bold]{stat_labels[st]}[/bold]{nat_sym} [bold white]{val:>3}[/bold white] {bar} ({ev_str})")
+
+    moves_lines = []
+    for mv in state.moves[:4]:
+        cat_ic = "💥" if mv.category == MoveCategory.PHYSICAL else ("✨" if mv.category == MoveCategory.SPECIAL else "🛡️")
+        bp_txt = f"{mv.base_power} BP" if mv.base_power > 0 else "Status"
+        moves_lines.append(f"• {_type_badge(mv.type, short=True)} {cat_ic} [bold white]{mv.name}[/bold white] [dim]({bp_txt})[/dim]")
+    while len(moves_lines) < 4:
+        moves_lines.append("[dim]• (Ranura vacía)[/dim]")
+
+    rem_evs = state.evs.remaining_evs
+    ev_status = (
+        f"[bold bright_green]508/508 EVs Completos[/bold bright_green]"
+        if rem_evs == 0
+        else f"[bold yellow]{state.evs.total}/508 EVs ({rem_evs} libres)[/bold yellow]"
+    )
+
+    body = (
+        f"{badges}\n"
+        f"[cyan]Habilidad:[/cyan] [bold yellow]{state.ability or 'Ninguna'}[/bold yellow] │ "
+        f"[cyan]Objeto:[/cyan] [bold white]{state.item or 'Ninguno'}[/bold white]\n"
+        f"[cyan]Naturaleza:[/cyan] [bold bright_cyan]{state.nature.value}[/bold bright_cyan] │ {ev_status}\n"
+        f"[dim]{'─' * 36}[/dim]\n"
+        + "\n".join(stat_lines)
+        + f"\n[dim]{'─' * 36}[/dim]\n"
+        + "\n".join(moves_lines)
+    )
+
+    return Panel(
+        body,
+        title=f"[bold bright_white]#{idx} {state.pokemon.name}[/bold bright_white] [dim](Nvl {state.level})[/dim]",
+        border_style="bright_blue",
+        box=box.ROUNDED,
+        expand=True,
+    )
+
+
+def render_team_dashboard(report: TeamAnalysisReport, source_label: str = "") -> None:
+    """Renderiza en terminal las tarjetas de todo el equipo, matriz defensiva, speed tiers y diagnóstico."""
+    team = report.team
+    fmt_badge = (
+        "[bold black on bright_magenta] FORMATO: DÚOS / VGC (DOBLES) [/bold black on bright_magenta]"
+        if report.team_format == TeamFormat.DOUBLES
+        else "[bold black on bright_cyan] FORMATO: 6v6 SINGLES / RANDOMLOCKE [/bold black on bright_cyan]"
+    )
+
+    console.print(
+        Rule(
+            f"[bold bright_yellow]📋 ROSTER DEL EQUIPO ({len(team)} POKÉMON)[/bold bright_yellow] {fmt_badge}",
+            style="bright_cyan",
+        )
+    )
+
+    # Mostrar tarjetas de Pokémon en filas de 2 columnas
+    for i in range(0, len(team), 2):
+        row_grid = Table.grid(expand=True, padding=(0, 1))
+        row_grid.add_column(ratio=1)
+        row_grid.add_column(ratio=1)
+        left_card = _render_pokemon_member_card(i + 1, team[i])
+        right_card = _render_pokemon_member_card(i + 2, team[i + 1]) if (i + 1) < len(team) else Text("")
+        row_grid.add_row(left_card, right_card)
+        console.print(row_grid)
+
+    # 2. Tabla de Sinergia Defensiva y Vulnerabilidades + Speed Tiers lado a lado
+    def_table = Table(
+        title="🛡️ Matriz de Resistencias y Debilidades Defensivas (Incluye Habilidades)",
+        box=box.SIMPLE_HEAVY,
+        header_style="bold bright_cyan",
+        expand=True,
+    )
+    def_table.add_column("Tipo Atacante", justify="left")
+    for m in team:
+        short_name = m.pokemon.name[:10]
+        def_table.add_column(short_name, justify="center")
+    def_table.add_column("Balance", justify="right")
+
+    for t in CORE_TYPES:
+        summ = report.defensive_matrix[t]
+        # Mostramos en la tabla todos los tipos donde hay alguna debilidad relevante o inmunidad destacada
+        cells = []
+        for mult in summ.per_member_multiplier:
+            if mult == 0.0:
+                cells.append("[bold bright_cyan]INM[/bold bright_cyan]")
+            elif mult == 0.25:
+                cells.append("[bold bright_green]¼x[/bold bright_green]")
+            elif mult == 0.5:
+                cells.append("[green]½x[/green]")
+            elif mult == 1.0:
+                cells.append("[dim]·[/dim]")
+            elif mult == 2.0:
+                cells.append("[bold yellow]2x[/bold yellow]")
+            else:
+                cells.append("[bold white on red]4x[/bold white on red]")
+
+        if summ.weak_count >= 3:
+            bal_str = f"[bold bright_red]⚠️ -{summ.weak_count} Déb[/bold bright_red]"
+        elif summ.weak_count >= 2 and (summ.resist_count + summ.immune_count) == 0:
+            bal_str = "[bold yellow]⚠️ Sin Res[/bold yellow]"
+        elif (summ.resist_count + summ.immune_count) > summ.weak_count:
+            bal_str = f"[bright_green]+{summ.resist_count + summ.immune_count} Res[/bright_green]"
+        else:
+            bal_str = "[dim]Neutro[/dim]"
+
+        def_table.add_row(_type_badge(t, short=True), *cells, bal_str)
+
+    console.print(def_table)
+
+    # 3. Speed Tiers + Cobertura Ofensiva lado a lado
+    sp_table = Table(title="⚡ Speed Tiers del Equipo (Nivel Real)", box=box.ROUNDED, border_style="yellow", expand=True)
+    sp_table.add_column("#", justify="right", style="dim")
+    sp_table.add_column("Pokémon", style="bold white")
+    sp_table.add_column("Spe Final", justify="right", style="bold bright_yellow")
+    sp_table.add_column("Inversión / Naturaleza", style="cyan")
+    for rank, (p_name, spe_v, desc) in enumerate(report.speed_tiers, start=1):
+        sp_table.add_row(str(rank), p_name, str(spe_v), desc)
+
+    cov_badges = " ".join(_type_badge(t, short=True) for t in sorted(report.offensive_super_effective_coverage, key=lambda x: x.value))
+    uncov_badges = (
+        " ".join(_type_badge(t, short=True) for t in report.uncovered_offensive_types)
+        if report.uncovered_offensive_types
+        else "[bold bright_green]¡Cobertura Total 18/18 Tipos![/bold bright_green]"
+    )
+    cov_panel = Panel(
+        f"[bold white]Perfil Ofensivo:[/bold white] [bold bright_red]{report.physical_attackers} Físicos[/bold bright_red] │ "
+        f"[bold bright_magenta]{report.special_attackers} Especiales[/bold bright_magenta]\n\n"
+        f"[bold bright_green]Golpea Supereficaz ({len(report.offensive_super_effective_coverage)}/18):[/bold bright_green]\n{cov_badges}\n\n"
+        f"[bold yellow]Tipos sin golpe Supereficaz ({len(report.uncovered_offensive_types)}):[/bold yellow]\n{uncov_badges}",
+        title="🎯 Cobertura Ofensiva del Equipo",
+        border_style="bright_magenta",
+        box=box.ROUNDED,
+        expand=True,
+    )
+
+    mid_grid = Table.grid(expand=True, padding=(0, 1))
+    mid_grid.add_column(ratio=1)
+    mid_grid.add_column(ratio=1)
+    mid_grid.add_row(sp_table, cov_panel)
+    console.print(mid_grid)
+
+    # 4. Panel de Diagnóstico de Equilibrio y Propuestas de Mejora
+    score = report.balance_score
+    score_color = "bright_green" if score >= 85 else ("gold1" if score >= 70 else "bright_red")
+    score_bar = _hp_bar(score, 100, width=25).replace("HP", "Pts")
+
+    diag_lines = [
+        f"Puntuación Global de Equilibrio ({report.team_format.value.upper()}): {score_bar} — [bold {score_color}]{report.verdict_label}[/bold {score_color}]\n"
+    ]
+
+    if report.strengths:
+        diag_lines.append("[bold bright_green]✅ PUNTOS FUERTES DETECTADOS:[/bold bright_green]")
+        for s in report.strengths:
+            diag_lines.append(f"   • [green]{s}[/green]")
+        diag_lines.append("")
+
+    if report.warnings:
+        diag_lines.append("[bold yellow]⚠️  DESEQUILIBRIOS Y PROBLEMAS DETECTADOS:[/bold yellow]")
+        for w in report.warnings:
+            diag_lines.append(f"   • [yellow]{w}[/yellow]")
+        diag_lines.append("")
+
+    if report.recommendations:
+        diag_lines.append("[bold bright_cyan]💡 OPCIONES RECOMENDADAS PARA MEJORAR EL EQUIPO:[/bold bright_cyan]")
+        for r in report.recommendations:
+            diag_lines.append(f"   ➔ [bright_white]{r}[/bright_white]")
+
+    console.print(
+        Panel(
+            "\n".join(diag_lines),
+            title=f"🧠 AUDITORÍA TÁCTICA Y RECOMENDACIONES ({'DÚOS / VGC' if report.team_format == TeamFormat.DOUBLES else '6v6 SINGLES'})",
+            border_style=score_color,
+            box=box.HEAVY,
+        )
+    )
+
+
+# ============================================================================
+# RENDERIZADO DEL OPTIMIZADOR DE EVs INDIVIDUAL (CONTRA AMENAZA ESPECÍFICA)
+# ============================================================================
 
 def _render_matchup_cards(
     attacker: PokemonState,
@@ -134,7 +364,6 @@ def _render_matchup_cards(
     eff_type, _ = get_effective_move_type(attacker, move)
     eff_mult = get_type_effectiveness(attacker, defender, move, eff_type)
 
-    # Detectar STAB visualmente
     atk_ability_norm = (attacker.ability or "").strip().lower()
     has_protean = atk_ability_norm in {"protean", "libero"} and not attacker.is_terastallized
     has_orig_stab = (eff_type in attacker.pokemon.types) or has_protean
@@ -146,7 +375,6 @@ def _render_matchup_cards(
     else:
         stab_str = "[dim]x1.0 (Sin STAB)[/dim]"
 
-    # Efectividad visual
     if eff_mult >= 4.0:
         eff_str = "[bold bright_red]x4.0 (Doble Supereficaz)[/bold bright_red]"
     elif eff_mult >= 2.0:
@@ -224,7 +452,6 @@ def _render_matchup_cards(
 
 
 def _render_rolls_visualizer(cand: OptimizationCandidate) -> Panel:
-    """Muestra los 16 rolls exactos del motor de daño (85%..100%) con colores según riesgo."""
     rolls = cand.damage_result.rolls
     hp = cand.final_hp
 
@@ -260,7 +487,6 @@ def _render_rolls_visualizer(cand: OptimizationCandidate) -> Panel:
 
 
 def _render_showdown_export(defender: PokemonState, cand: OptimizationCandidate) -> Panel:
-    """Genera el bloque listo para copiar y pegar en Pokémon Showdown / PokéPaste."""
     def_label = "Def" if cand.def_stat_name == StatName.DEF else "SpD"
     ev_parts = []
     if cand.hp_evs > 0:
@@ -279,6 +505,8 @@ def _render_showdown_export(defender: PokemonState, cand: OptimizationCandidate)
         lines.append(f"[cyan]Tera Type:[/cyan] {defender.tera_type.value}")
     lines.append(f"[cyan]EVs:[/cyan] [bold yellow]{ev_line}[/bold yellow]  [dim](# + {cand.remaining_evs} EVs libres)[/dim]")
     lines.append(f"[cyan]{cand.nature.value} Nature[/cyan]")
+    for mv in defender.moves[:4]:
+        lines.append(f"- {mv.name}")
 
     return Panel(
         "\n".join(lines),
@@ -323,17 +551,19 @@ def _execute_and_render_optimization(
     target: SurvivalTarget,
     field: BattleField,
     show_header: bool = True,
-) -> None:
-    """Núcleo compartido entre el modo CLI por argumentos y el modo Interactivo."""
+) -> OptimizationCandidate | None:
     def_poke = defender_state.pokemon
     level = defender_state.level
     preferred_penalty = (
         StatName.ATK if def_poke.base_stats.spa >= def_poke.base_stats.atk else StatName.SPA
     )
 
+    # Limpiamos EVs previos del defensor al calcular el mínimo desde cero contra este golpe
+    clean_defender = defender_state.model_copy(update={"evs": StatSpread()})
+
     report = optimize_defense(
         attacker=attacker_state,
-        defender=defender_state,
+        defender=clean_defender,
         move=move_obj,
         target=target,
         field=field,
@@ -360,7 +590,7 @@ def _execute_and_render_optimization(
                 box=box.HEAVY,
             )
         )
-        return
+        return None
 
     best = report.best_overall
     def_label = "Def" if best.def_stat_name == StatName.DEF else "SpD"
@@ -442,10 +672,201 @@ def _execute_and_render_optimization(
 
     console.print(table)
     console.print()
+    return best
 
 
 # ============================================================================
-# MODO 1: CLI NO INTERACTIVO (Por argumentos directos / Scripting)
+# COMANDO 1: ANALIZAR ARCHIVO DE EQUIPO (NO INTERACTIVO O CON CENTRO INTERACTIVO)
+# ============================================================================
+
+@app.command("team")
+def team_command(
+    file: str = typer.Option(
+        "team_example.txt",
+        "--file",
+        "-f",
+        help="Ruta al archivo del equipo en formato Showdown / PokéPaste (.txt) o .json.",
+    ),
+    mode: TeamFormat = typer.Option(
+        TeamFormat.DOUBLES,
+        "--format",
+        "-m",
+        help="Orientación táctica del equipo: 'duos' (VGC/Dobles) o '6v6' (Singles/Randomlocke).",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Abre el centro de mando interactivo tras visualizar el análisis del equipo.",
+    ),
+) -> None:
+    """
+    Carga un archivo de equipo, muestra visualmente todos sus Pokémon (stats reales, EVs, naturaleza,
+    movimientos) y diagnostica si está equilibrado para 6v6 o Dúos con opciones de mejora.
+    """
+    try:
+        team = load_team_from_file(file)
+    except Exception as err:
+        console.print(Panel(f"[bold red]{err}[/bold red]", title="❌ Error al Cargar Equipo", border_style="red"))
+        raise typer.Exit(code=1)
+
+    console.print()
+    console.print(_render_header())
+    report = analyze_team(team, team_format=mode)
+    render_team_dashboard(report, source_label=file)
+
+    if interactive:
+        _interactive_team_loop(team, mode, file)
+
+
+def _interactive_team_loop(team: list[PokemonState], current_format: TeamFormat, current_file: str) -> None:
+    """Bucle interactivo centrado en el equipo cargado."""
+    while True:
+        fmt_name = "Dúos / VGC (Dobles)" if current_format == TeamFormat.DOUBLES else "6v6 Singles"
+        console.print(
+            Panel(
+                f"[bold white]Equipo activo:[/bold white] [cyan]{current_file}[/cyan] ({len(team)} Pokémon) │ "
+                f"[bold white]Modo actual:[/bold white] [bold magenta]{fmt_name}[/bold magenta]\n\n"
+                "  [bold cyan][1][/bold cyan] 🛡️  Optimizar EVs Defensivos de un Pokémon de tu equipo contra una amenaza rival\n"
+                "  [bold cyan][2][/bold cyan] 🔄 Cambiar orientación del análisis ([bold]Dúos / VGC[/bold] ⇄ [bold]6v6 Singles[/bold]) y re-evaluar equilibrio\n"
+                "  [bold cyan][3][/bold cyan] 📂 Cargar otro archivo de equipo (.txt / .json)\n"
+                "  [bold cyan][4][/bold cyan] 📖 Ver Catálogo Integrado de Pokémon y Movimientos\n"
+                "  [bold cyan][5][/bold cyan] 🚪 Salir",
+                title="🎮 Centro de Mando del Equipo — PokeStat",
+                border_style="bright_cyan",
+                box=box.ROUNDED,
+            )
+        )
+        choice = Prompt.ask("Elige una acción", choices=["1", "2", "3", "4", "5"], default="1")
+
+        if choice == "5":
+            console.print("[bold bright_cyan]¡Equipo listo para el combate! Hasta pronto.[/bold bright_cyan]")
+            break
+
+        if choice == "4":
+            list_catalog()
+            continue
+
+        if choice == "3":
+            new_path = Prompt.ask("Ruta del archivo de equipo (.txt o .json)", default=current_file)
+            fmt_choice = Prompt.ask("¿Para qué formato está orientado?", choices=["duos", "6v6"], default=current_format.value)
+            try:
+                team = load_team_from_file(new_path)
+                current_file = new_path
+                current_format = TeamFormat(fmt_choice)
+                report = analyze_team(team, team_format=current_format)
+                render_team_dashboard(report, source_label=current_file)
+            except Exception as err:
+                console.print(f"[bold red]Error al cargar '{new_path}':[/bold red] {err}")
+            continue
+
+        if choice == "2":
+            current_format = TeamFormat.SINGLES if current_format == TeamFormat.DOUBLES else TeamFormat.DOUBLES
+            report = analyze_team(team, team_format=current_format)
+            render_team_dashboard(report, source_label=current_file)
+            continue
+
+        if choice == "1":
+            console.print(Rule("[bold bright_blue]SELECCIONA EL POKÉMON DE TU EQUIPO A OPTIMIZAR[/bold bright_blue]"))
+            for idx, m in enumerate(team, start=1):
+                console.print(f"  [bold cyan][{idx}][/bold cyan] {m.pokemon.name} ({m.nature.value}, Objeto: {m.item or 'Ninguno'}, Habilidad: {m.ability or 'Ninguna'})")
+            valid_indices = [str(i) for i in range(1, len(team) + 1)]
+            sel_idx = int(Prompt.ask("Número de Pokémon", choices=valid_indices, default="1")) - 1
+            defender_member = team[sel_idx]
+
+            console.print(Rule("[bold red]CONFIGURA LA AMENAZA RIVAL[/bold red]", style="red"))
+            atk_name = Prompt.ask("  Pokémon Atacante rival", default="Dragonite")
+            in_cat = atk_name.strip().lower() in POKEMON_CATALOG
+            c_types = None
+            c_stats = None
+            if not in_cat:
+                c_types = Prompt.ask("  Tipos del atacante (separados por coma)", default="Normal")
+                c_stats = Prompt.ask("  Base Stats (HP,Atk,Def,SpA,SpD,Spe)", default="90,120,90,90,90,100")
+            atk_poke = resolve_pokemon(atk_name, custom_types=c_types, custom_base_stats=c_stats)
+
+            atk_ab = Prompt.ask("  Habilidad del atacante [dim](Enter = Ninguna / Neutra)[/dim]", default="").strip() or None
+            atk_item = Prompt.ask("  Objeto del atacante [dim](ej. Choice Band, Choice Specs, Life Orb | Enter = Ninguno)[/dim]", default="Choice Band").strip() or None
+
+            move_name = Prompt.ask("  Movimiento del atacante", default="Earthquake")
+            move_obj = resolve_move(move_name)
+            default_nat = "Adamant" if move_obj.category == MoveCategory.PHYSICAL else "Modest"
+            atk_nat_str = Prompt.ask("  Naturaleza del atacante", default=default_nat)
+            atk_nature = Nature(atk_nat_str.strip().capitalize())
+            atk_evs = IntPrompt.ask("  EVs ofensivos del atacante (0-252)", default=252)
+            target_str = Prompt.ask(
+                "  Objetivo de supervivencia",
+                choices=["survive-1-hit", "survive-2-hits", "survive-3-hits"],
+                default="survive-1-hit",
+            )
+
+            atk_spread = StatSpread(atk=atk_evs) if move_obj.category == MoveCategory.PHYSICAL else StatSpread(spa=atk_evs)
+            attacker_state = PokemonState(
+                pokemon=atk_poke,
+                level=defender_member.level,
+                nature=atk_nature,
+                evs=atk_spread,
+                item=atk_item,
+                ability=atk_ab,
+            )
+            field = BattleField(is_doubles=(current_format == TeamFormat.DOUBLES))
+
+            best_cand = _execute_and_render_optimization(
+                attacker_state=attacker_state,
+                defender_state=defender_member,
+                move_obj=move_obj,
+                target=SurvivalTarget(target_str),
+                field=field,
+                show_header=False,
+            )
+
+            if best_cand is not None and Confirm.ask(
+                f"¿Quieres aplicar este spread óptimo ({best_cand.hp_evs} HP / {best_cand.def_evs} {best_cand.def_stat_name.value.upper()}, {best_cand.nature.value}) a {defender_member.pokemon.name} en la sesión actual?",
+                default=True,
+            ):
+                new_evs = defender_member.evs.model_copy(
+                    update={
+                        "hp": best_cand.hp_evs,
+                        "def_": best_cand.def_evs if best_cand.def_stat_name == StatName.DEF else defender_member.evs.def_,
+                        "spd": best_cand.def_evs if best_cand.def_stat_name == StatName.SPD else defender_member.evs.spd,
+                    }
+                )
+                team[sel_idx] = defender_member.model_copy(update={"nature": best_cand.nature, "evs": new_evs})
+                console.print(f"[bold bright_green]✅ ¡Spread actualizado en {defender_member.pokemon.name}![/bold bright_green]")
+
+
+@app.command("interactive")
+def interactive_command() -> None:
+    """
+    [MODO INTERACTIVO] Te pide el archivo de tu equipo y si es para Dúos o 6v6, muestra todo el
+    análisis visual y abre el Centro de Mando del Equipo.
+    """
+    console.print()
+    console.print(_render_header())
+    default_file = "team_example.txt" if Path("team_example.txt").exists() else ""
+    file_path = Prompt.ask(
+        "📂 Introduce la ruta del archivo de tu equipo (.txt Showdown/PokéPaste o .json)",
+        default=default_file,
+    )
+    fmt_choice = Prompt.ask(
+        "🎯 ¿Para qué formato está orientado tu equipo?",
+        choices=["duos", "6v6"],
+        default="duos",
+    )
+    mode = TeamFormat(fmt_choice)
+
+    try:
+        team = load_team_from_file(file_path)
+    except Exception as err:
+        console.print(Panel(f"[bold red]{err}[/bold red]", title="❌ Error al Cargar Equipo", border_style="red"))
+        raise typer.Exit(code=1)
+
+    report = analyze_team(team, team_format=mode)
+    render_team_dashboard(report, source_label=file_path)
+    _interactive_team_loop(team, mode, file_path)
+
+
+# ============================================================================
+# COMANDO 2: OPTIMIZADOR INDIVIDUAL POR ARGUMENTOS DIRECTOS
 # ============================================================================
 
 @app.command("optimize-def")
@@ -459,7 +880,6 @@ def optimize_def_command(
         "-t",
         help="Objetivo de supervivencia: survive-1-hit (evitar OHKO), survive-2-hits (evitar 2HKO), survive-3-hits.",
     ),
-    # Configuración del Atacante (Standard + Randomlocke)
     nature_attacker: Nature = typer.Option(
         Nature.ADAMANT,
         "--nature-attacker",
@@ -478,7 +898,6 @@ def optimize_def_command(
     statused_attacker: bool = typer.Option(False, "--statused-attacker", help="Si el atacante tiene un problema de estado (para Guts, Toxic Boost)."),
     attacker_types: Optional[str] = typer.Option(None, "--attacker-types", help="Sobrescribir tipos del atacante separados por coma (ej. 'Dragon,Flying')."),
     attacker_stats: Optional[str] = typer.Option(None, "--attacker-stats", help="Sobrescribir Base Stats del atacante: 'HP,Atk,Def,SpA,SpD,Spe'."),
-    # Configuración del Defensor (Standard + Randomlocke)
     item_defender: Optional[str] = typer.Option(None, "--item-defender", help="Objeto del defensor (ej. 'Assault Vest', 'Eviolite', 'Ability Shield')."),
     ability_defender: Optional[str] = typer.Option(
         None,
@@ -492,11 +911,9 @@ def optimize_def_command(
     defender_types: Optional[str] = typer.Option(None, "--defender-types", help="Sobrescribir tipos del defensor separados por coma."),
     defender_stats: Optional[str] = typer.Option(None, "--defender-stats", help="Sobrescribir Base Stats del defensor: 'HP,Atk,Def,SpA,SpD,Spe'."),
     level: int = typer.Option(50, "--level", "-l", min=1, max=100, help="Nivel de los Pokémon (50 por defecto en VGC)."),
-    # Configuración personalizada del Movimiento (para Randomlocke o ataques fuera del catálogo)
     move_type: Optional[PokemonType] = typer.Option(None, "--move-type", help="Tipo del movimiento (si es personalizado o modificado)."),
     move_category: Optional[MoveCategory] = typer.Option(None, "--move-category", help="Categoría del movimiento (Physical / Special)."),
     move_bp: Optional[int] = typer.Option(None, "--move-bp", help="Potencia base del movimiento."),
-    # Condiciones del Campo (VGC / Singles)
     doubles: bool = typer.Option(False, "--doubles", help="Activa modo Dobles/VGC (aplica 0.75x a movimientos spread como Earthquake)."),
     weather: Weather = typer.Option(Weather.NONE, "--weather", help="Clima activo (Sun, Rain, Sand, Snow)."),
     terrain: Terrain = typer.Option(Terrain.NONE, "--terrain", help="Campo activo (Electric, Grassy, Misty, Psychic)."),
@@ -507,7 +924,7 @@ def optimize_def_command(
     friend_guard: bool = typer.Option(False, "--friend-guard", help="Friend Guard activo en el aliado del defensor."),
 ) -> None:
     """
-    [MODO NO INTERACTIVO] Calcula el spread óptimo directamente mediante argumentos de línea de comandos.
+    Calcula el spread óptimo de EVs y Naturaleza directamente para un enfrentamiento 1v1 o Dobles.
     """
     try:
         atk_poke = resolve_pokemon(attacker, attacker_types, attacker_stats)
@@ -575,200 +992,9 @@ def optimize_def_command(
     _execute_and_render_optimization(attacker_state, defender_state, move_obj, target, field)
 
 
-# ============================================================================
-# MODO 2: ASISTENTE INTERACTIVO GUIADO PASO A PASO
-# ============================================================================
-
-def _prompt_pokemon_interactive(role_label: str, default_name: str, border_color: str) -> tuple:
-    console.print(Rule(f"[bold {border_color}]{role_label}[/bold {border_color}]", style=border_color))
-    while True:
-        name = Prompt.ask(f"  Nombre del Pokémon [dim](Enter para '{default_name}')[/dim]", default=default_name)
-        in_catalog = name.strip().lower() in POKEMON_CATALOG
-        custom_types = None
-        custom_stats = None
-
-        if not in_catalog:
-            console.print(f"  [yellow]ℹ️  '{name}' no está en el catálogo rápido. Introduce sus Tipos y Base Stats:[/yellow]")
-            custom_types = Prompt.ask("  Tipos separados por coma [dim](ej. Fire,Flying)[/dim]", default="Normal")
-            custom_stats = Prompt.ask("  Base Stats (HP,Atk,Def,SpA,SpD,Spe) [dim](ej. 80,100,80,80,80,100)[/dim]", default="80,100,80,80,80,100")
-        elif Confirm.ask("  ¿Quieres personalizar sus Tipos o Base Stats (Randomlocke)?", default=False):
-            custom_types = Prompt.ask("  Nuevos Tipos separados por coma [dim](Enter para mantener)[/dim]", default="") or None
-            custom_stats = Prompt.ask("  Nuevos Base Stats HP,Atk,Def,SpA,SpD,Spe [dim](Enter para mantener)[/dim]", default="") or None
-
-        try:
-            poke = resolve_pokemon(name, custom_types, custom_stats)
-            break
-        except ValueError as err:
-            console.print(f"  [bold red]Error:[/bold red] {err}")
-
-    ability = Prompt.ask(
-        "  Habilidad [dim](ej. Huge Power, Adaptability, Protean, Multiscale, Fur Coat, Levitate | Enter = Ninguna)[/dim]",
-        default="",
-    ).strip() or None
-    item = Prompt.ask(
-        "  Objeto [dim](ej. Choice Band, Choice Specs, Life Orb, Assault Vest, Eviolite | Enter = Ninguno)[/dim]",
-        default="",
-    ).strip() or None
-    tera_raw = Prompt.ask(
-        "  Tipo Tera activo [dim](ej. Fire, Water, Ground, Fairy, Stellar | Enter = No Teracristalizado)[/dim]",
-        default="",
-    ).strip()
-    tera_type = PokemonType(tera_raw.capitalize()) if tera_raw else None
-    return poke, ability, item, tera_type
-
-
-@app.command("interactive")
-def interactive_command() -> None:
-    """
-    [MODO INTERACTIVO] Asistente visual paso a paso para optimizar EVs en Competitivo o Randomlocke.
-    """
-    console.print()
-    console.print(_render_header())
-
-    while True:
-        console.print(
-            Panel(
-                "[bold white]Selecciona una acción del menú principal:[/bold white]\n"
-                "  [bold cyan][1][/bold cyan] 🛡️  Optimizar EVs Defensivos (Asistente Guiado Paso a Paso)\n"
-                "  [bold cyan][2][/bold cyan] ⚡ Prueba Rápida de Demostración (Dragonite Choice Band vs Flutter Mane)\n"
-                "  [bold cyan][3][/bold cyan] 📖 Ver Catálogo Integrado de Pokémon y Movimientos\n"
-                "  [bold cyan][4][/bold cyan] 🚪 Salir",
-                title="🎮 Menú Interactivo PokeStat",
-                border_style="bright_cyan",
-                box=box.ROUNDED,
-            )
-        )
-        choice = Prompt.ask("Elige una opción", choices=["1", "2", "3", "4"], default="1")
-
-        if choice == "4":
-            console.print("[bold bright_cyan]¡Hasta pronto, entrenador![/bold bright_cyan]")
-            break
-
-        if choice == "3":
-            list_catalog()
-            continue
-
-        if choice == "2":
-            optimize_def_command(
-                defender="Flutter Mane",
-                attacker="Dragonite",
-                move="Earthquake",
-                target=SurvivalTarget.SURVIVE_1_HIT,
-                nature_attacker=Nature.ADAMANT,
-                evs_attacker=252,
-                item_attacker="Choice Band",
-                ability_attacker=None,
-                tera_attacker=None,
-                boost_attacker=0,
-                burned_attacker=False,
-                statused_attacker=False,
-                attacker_types=None,
-                attacker_stats=None,
-                item_defender=None,
-                ability_defender=None,
-                tera_defender=None,
-                boost_defender=0,
-                statused_defender=False,
-                not_full_hp=False,
-                defender_types=None,
-                defender_stats=None,
-                level=50,
-                move_type=None,
-                move_category=None,
-                move_bp=None,
-                doubles=False,
-                weather=Weather.NONE,
-                terrain=Terrain.NONE,
-                reflect=False,
-                light_screen=False,
-                aurora_veil=False,
-                helping_hand=False,
-                friend_guard=False,
-            )
-            continue
-
-        # Opción 1: Asistente paso a paso
-        def_poke, def_ab, def_item, def_tera = _prompt_pokemon_interactive(
-            "PASO 1: CONFIGURAR TU POKÉMON DEFENSOR", "Flutter Mane", "bright_blue"
-        )
-        atk_poke, atk_ab, atk_item, atk_tera = _prompt_pokemon_interactive(
-            "PASO 2: CONFIGURAR EL POKÉMON ATACANTE RIVAL", "Dragonite", "red"
-        )
-
-        console.print(Rule("[bold yellow]PASO 3: MOVIMIENTO DEL ATACANTE[/bold yellow]", style="yellow"))
-        while True:
-            move_name = Prompt.ask("  Nombre del Movimiento", default="Earthquake")
-            in_move_cat = move_name.strip().lower() in MOVE_CATALOG
-            m_type = None
-            m_cat = None
-            m_bp = None
-            if not in_move_cat:
-                console.print(f"  [yellow]ℹ️  '{move_name}' es personalizado. Define sus datos:[/yellow]")
-                t_str = Prompt.ask("  Tipo del movimiento [dim](ej. Ground, Fire, Fairy)[/dim]", default="Normal")
-                c_str = Prompt.ask("  Categoría", choices=["Physical", "Special"], default="Physical")
-                m_bp = IntPrompt.ask("  Potencia Base (BP)", default=100)
-                m_type = PokemonType(t_str.strip().capitalize())
-                m_cat = MoveCategory(c_str)
-            try:
-                move_obj = resolve_move(move_name, move_type=m_type, move_category=m_cat, move_bp=m_bp)
-                break
-            except ValueError as err:
-                console.print(f"  [bold red]Error:[/bold red] {err}")
-
-        console.print(Rule("[bold magenta]PASO 4: DETALLES DE COMBATE Y OBJETIVO[/bold magenta]", style="magenta"))
-        default_nat = "Adamant" if move_obj.category == MoveCategory.PHYSICAL else "Modest"
-        nat_str = Prompt.ask(
-            f"  Naturaleza del Atacante [dim](Adamant, Modest, Jolly, Timid, Serious...)[/dim]",
-            default=default_nat,
-        )
-        atk_nature = Nature(nat_str.strip().capitalize())
-        atk_evs = IntPrompt.ask("  EVs ofensivos del Atacante (0-252)", default=252)
-        level = IntPrompt.ask("  Nivel del combate", default=50)
-        is_doubles = Confirm.ask("  ¿Es combate Dobles / VGC?", default=False)
-        target_choice = Prompt.ask(
-            "  Objetivo de supervivencia",
-            choices=["survive-1-hit", "survive-2-hits", "survive-3-hits"],
-            default="survive-1-hit",
-        )
-
-        atk_ev_spread = (
-            StatSpread(atk=atk_evs)
-            if move_obj.category == MoveCategory.PHYSICAL
-            else StatSpread(spa=atk_evs)
-        )
-        attacker_state = PokemonState(
-            pokemon=atk_poke,
-            level=level,
-            nature=atk_nature,
-            evs=atk_ev_spread,
-            item=atk_item,
-            ability=atk_ab,
-            tera_type=atk_tera,
-            is_terastallized=atk_tera is not None,
-        )
-        defender_state = PokemonState(
-            pokemon=def_poke,
-            level=level,
-            item=def_item,
-            ability=def_ab,
-            tera_type=def_tera,
-            is_terastallized=def_tera is not None,
-        )
-        field = BattleField(is_doubles=is_doubles)
-
-        _execute_and_render_optimization(
-            attacker_state=attacker_state,
-            defender_state=defender_state,
-            move_obj=move_obj,
-            target=SurvivalTarget(target_choice),
-            field=field,
-            show_header=False,
-        )
-
-
 @app.callback()
 def main_callback(ctx: typer.Context) -> None:
-    """Si el usuario ejecuta `python main.py` sin subcomandos, lanza automáticamente el modo interactivo."""
+    """Si se ejecuta sin argumentos (`python main.py`), abre el modo interactivo de análisis de equipo."""
     if ctx.invoked_subcommand is None:
         interactive_command()
 
@@ -780,7 +1006,7 @@ def list_catalog() -> None:
     console.print(_render_header())
 
     p_table = Table(
-        title="📖 Pokémon en Catálogo Integrado (Usa --defender-stats/--defender-types para cualquier otro)",
+        title="📖 Pokémon en Catálogo Integrado",
         box=box.ROUNDED,
         header_style="bold bright_cyan",
         border_style="bright_blue",
@@ -811,7 +1037,7 @@ def list_catalog() -> None:
     console.print(p_table)
 
     m_table = Table(
-        title="⚔️ Movimientos en Catálogo Integrado (Usa --move-type/--move-category/--move-bp para cualquier otro)",
+        title="⚔️ Movimientos en Catálogo Integrado",
         box=box.ROUNDED,
         header_style="bold bright_yellow",
         border_style="yellow",
@@ -841,7 +1067,7 @@ def list_catalog() -> None:
             flags.append("Pulso")
         if m.is_recoil:
             flags.append("Retroceso")
-        cat_str = "💥 Physical" if m.category == MoveCategory.PHYSICAL else "✨ Special"
+        cat_str = "💥 Physical" if m.category == MoveCategory.PHYSICAL else ("✨ Special" if m.category == MoveCategory.SPECIAL else "🛡️ Status")
         m_table.add_row(
             m.name,
             _type_badge(m.type),

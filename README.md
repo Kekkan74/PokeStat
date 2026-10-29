@@ -37,13 +37,30 @@ pip install -r requirements.txt
 
 ## 🎮 Uso
 
-### 1. Modo Interactivo (Asistente Paso a Paso)
-Simplemente ejecuta el programa sin argumentos (o con `interactive`):
+### 1. Analizar un Archivo de Equipo (Modo Interactivo o Directo)
+Pásale un archivo `.txt` (formato *Pokémon Showdown / PokéPaste*, como [`team_example.txt`](team_example.txt)) o `.json` y elige si tu equipo está orientado a **Dúos (`duos` / VGC)** o **6v6 (`6v6` / Singles / Randomlocke)**:
+
 ```bash
+# Modo Interactivo (te pide el archivo, elige entre 'duos' o '6v6', muestra el dashboard y abre el Centro de Mando)
 python main.py
+
+# Modo Directo por Comando para Dúos (VGC)
+python main.py team --file team_example.txt --format duos
+
+# Modo Directo por Comando para 6v6 Singles
+python main.py team --file team_example.txt --format 6v6
 ```
 
-### 2. Modo No Interactivo (Por Comandos)
+**¿Qué muestra el Auditor de Equipos?**
+- **Tarjetas Visuales de los 6 Pokémon:** Tipos, Tera Type, Habilidad, Objeto, Naturaleza, **Stats finales reales a Nivel 50** con barras de progreso (`+` / `-` de naturaleza y EVs invertidos) y sus 4 movimientos con categoría y BP.
+- **Matriz Defensiva de los 18 Tipos:** Resistencias (`½x`, `¼x`), inmunidades por tipo o habilidad (`INM`, ej. *Levitate*, *Volt Absorb*, *Wonder Guard*) y debilidades (`2x`, `4x`) de cada miembro.
+- **Speed Tiers y Cobertura Ofensiva:** Orden exacto de velocidad del equipo y qué tipos elementales cubres en supereficaz.
+- **Diagnóstico de Equilibrio (0–100 pts) y Recomendaciones:**
+  - En **`duos` (VGC):** Evalúa *Item Clause* (objetos repetidos), usuarios de *Protect/Detect*, *Speed Control* (*Tailwind*, *Trick Room*, *Icy Wind*), *Fake Out*, *Intimidate*, redirección y sinergia de tipos.
+  - En **`6v6` (Singles):** Evalúa *Entry Hazards* (*Stealth Rock*, *Spikes*), limpieza de hazards (*Rapid Spin*, *Defog*, *Heavy-Duty Boots*), movimientos de pivote (*U-turn*, *Volt Switch*, *Parting Shot*) y balance de daño físico/especial.
+  - Además detecta **EVs sin usar** o **EVs desperdiciados a Nivel 50** (que no siguen la progresión `4 + 8k`) y te permite optimizar el *bulk* de cualquier miembro de tu equipo contra una amenaza concreta desde el menú.
+
+### 2. Optimizador de EVs Defensivos Individual (`optimize-def`)
 
 #### Ejemplo Competitivo Estándar
 ```bash

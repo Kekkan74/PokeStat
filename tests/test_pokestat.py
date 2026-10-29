@@ -3,6 +3,7 @@ from pokestat.catalog import resolve_move, resolve_pokemon
 from pokestat.damage_engine import calculate_damage
 from pokestat.models import BattleField, Nature, PokemonState, PokemonType, StatSpread
 from pokestat.optimizer import SurvivalTarget, optimize_defense
+from pokestat.team_analyzer import TeamFormat, analyze_team, load_team_from_file
 
 
 def test_level_50_stat_calculation():
@@ -88,3 +89,18 @@ def test_optimizer_finds_minimum_ev_spread():
     # Verifica que es múltiplo válido a nivel 50 (0 o 4 + 8k)
     assert report.best_overall.hp_evs == 0 or (report.best_overall.hp_evs - 4) % 8 == 0
     assert report.best_overall.def_evs == 0 or (report.best_overall.def_evs - 4) % 8 == 0
+
+
+def test_team_loader_and_analyzer_duos_vs_6v6():
+    team = load_team_from_file("team_example.txt")
+    assert len(team) == 6
+    assert team[0].pokemon.name == "Flutter Mane"
+    assert len(team[0].moves) == 4
+
+    rep_duos = analyze_team(team, TeamFormat.DOUBLES)
+    rep_6v6 = analyze_team(team, TeamFormat.SINGLES)
+
+    # Este equipo está diseñado para VGC/Dúos (Protect, Tailwind, Fake Out), por lo que puntúa más alto en Dúos que en 6v6 (donde faltan Stealth Rock / Rapid Spin)
+    assert rep_duos.balance_score > rep_6v6.balance_score
+    assert len(rep_duos.speed_tiers) == 6
+
