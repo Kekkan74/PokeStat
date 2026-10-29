@@ -46,13 +46,19 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 app = typer.Typer(
     name="pokestat",
     help="Analizador Visual de Equipos (6v6 / Dúos) y Optimizador Matemático de EVs para Pokémon Gen 9 & Randomlocke.",
     add_completion=False,
     invoke_without_command=True,
 )
-console = Console()
+console = Console(force_terminal=True if sys.stdout.isatty() else None)
 
 # Paleta de colores oficial por Tipo Elemental para badges en terminal
 TYPE_STYLES: dict[PokemonType, str] = {
