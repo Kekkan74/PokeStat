@@ -3,6 +3,7 @@ from enum import Enum
 import json
 from pathlib import Path
 import re
+from typing import Optional
 from pokestat.calculator import calculate_all_stats
 from pokestat.catalog import resolve_move, resolve_pokemon
 from pokestat.damage_engine import get_effective_move_type, get_type_effectiveness
@@ -220,6 +221,112 @@ def load_team_from_file(path: str | Path) -> list[PokemonState]:
 
 
 # ============================================================================
+# CONSTANTES TÁCTICAS PARA CLASIFICACIÓN DE ROLES COMPETITIVOS
+# ============================================================================
+
+REDIRECTION_MOVES: set[str] = {"follow me", "rage powder", "spotlight", "ally switch"}
+PROTECT_MOVES: set[str] = {
+    "protect", "detect", "spiky shield", "baneful bunker", "wide guard",
+    "quick guard", "kings shield", "king's shield", "silk trap", "burning bulwark", "obstruct"
+}
+SPEED_CONTROL_MOVES: set[str] = {
+    "tailwind", "trick room", "icy wind", "electroweb", "thunder wave",
+    "glare", "quash", "string shot", "bulldoze", "scary face"
+}
+SUPPORT_DISRUPT_MOVES: set[str] = {
+    "fake out", "parting shot", "spore", "yawn", "will-o-wisp", "thunder wave",
+    "taunt", "encore", "helping hand", "haze", "clear smog", "roar", "whirlwind",
+    "reflect", "light screen", "aurora veil", "heal bell", "aromatherapy", "trick",
+    "switcheroo", "hypnosis", "sleep powder"
+}
+RECOVERY_MOVES: set[str] = {
+    "recover", "roost", "slack off", "soft-boiled", "synthesis", "wish", "rest",
+    "shore up", "strength sap", "milk drink", "morning sun", "moonlight", "life dew", "heal order"
+}
+SETUP_MOVES: set[str] = {
+    "swords dance", "nasty plot", "dragon dance", "calm mind", "bulk up",
+    "quiver dance", "iron defense", "curse", "shell smash", "shift gear",
+    "victory dance", "tidy up", "fillet away", "belly drum", "growth", "agility", "rock polish",
+    "tail glow", "clangorous soul", "no retreat", "autotomize", "hone claws", "coil"
+}
+PIVOT_MOVES: set[str] = {
+    "u-turn", "volt switch", "flip turn", "parting shot", "chilly reception", "teleport", "shed tail", "baton pass"
+}
+HAZARD_SET_MOVES: set[str] = {
+    "stealth rock", "spikes", "toxic spikes", "sticky web", "ceaseless edge", "stone axe"
+}
+HAZARD_REMOVE_MOVES: set[str] = {
+    "rapid spin", "defog", "mortal spin", "tidy up", "court change"
+}
+OFFENSIVE_ITEMS: set[str] = {
+    "choice band", "choice specs", "choice scarf", "life orb", "expert belt",
+    "focus sash", "booster energy", "loaded dice", "punching glove",
+    "mystic water", "charcoal", "magnet", "miracle seed", "never-melt ice",
+    "black glasses", "soft sand", "spell tag", "twisted spoon", "dragon fang",
+    "sharp beak", "poison barb", "hard stone", "silver powder", "metal coat", "silk scarf",
+    "garchompite", "air balloon", "zoom lens"
+}
+DEFENSIVE_ITEMS: set[str] = {
+    "leftovers", "sitrus berry", "assault vest", "eviolite", "rocky helmet",
+    "heavy-duty boots", "black sludge", "iapapa berry", "aguav berry", "figy berry",
+    "wiki berry", "mago berry", "covert cloak", "safety goggles", "mental herb"
+}
+OFFENSIVE_ABILITIES: set[str] = {
+    "protosynthesis", "quark drive", "unseen fist", "sword of ruin", "beads of ruin",
+    "supreme overlord", "huge power", "pure power", "adaptability", "sheer force",
+    "aerilate", "pixilate", "refrigerate", "galvanize", "moxie", "beast boost",
+    "transistor", "dragons maw", "dragon's maw", "tough claws", "sharpness",
+    "technician", "guts", "magic guard", "contrary", "speed boost", "libero", "protean"
+}
+DEFENSIVE_ABILITIES: set[str] = {
+    "intimidate", "fur coat", "ice scales", "fluffy", "unaware", "regenerator",
+    "friend guard", "vessel of ruin", "tablets of ruin", "thick fat", "water absorb",
+    "earth eater", "well-baked body", "solid rock", "multiscale", "shadow shield",
+    "filter", "prism armor", "stamına", "stamina", "good as gold", "dauntless shield",
+    "magic bounce", "poison heal", "natural cure", "purifying salt"
+}
+
+
+@dataclass
+class MemberRoleInfo:
+    """Rol competitivo y táctico asignado a un miembro del equipo."""
+    member_name: str
+    species_name: str
+    role_tag: str
+    role_title: str
+    role_icon: str
+    is_damage_dealer: bool
+    is_tank: bool
+    is_support: bool
+    details: str
+
+
+@dataclass
+class FormatCompositionReport:
+    """Auditoría de composición y roles según el formato de juego (Dúos vs 6v6)."""
+    team_format: TeamFormat
+    archetype_label: str
+    damage_dealers_count: int
+    tanks_count: int
+    supports_count: int
+    # 6v6 específico
+    wallbreakers_count: int = 0
+    sweepers_count: int = 0
+    physical_walls_count: int = 0
+    special_walls_count: int = 0
+    pivots_count: int = 0
+    hazard_controllers_count: int = 0
+    # Veredictos del formato
+    damage_verdict_title: str = ""
+    damage_verdict_status: str = "OPTIMAL"  # "OPTIMAL", "WARNING", "CRITICAL"
+    damage_verdict_desc: str = ""
+    tank_verdict_title: str = ""
+    tank_verdict_status: str = "OPTIMAL"    # "OPTIMAL", "WARNING", "CRITICAL"
+    tank_verdict_desc: str = ""
+    role_assignments: list[MemberRoleInfo] = field(default_factory=list)
+
+
+# ============================================================================
 # MOTOR DE AUDITORÍA TÁCTICA Y EQUILIBRIO DE EQUIPO (6v6 vs DÚOS/VGC)
 # ============================================================================
 
@@ -258,6 +365,514 @@ class TeamAnalysisReport:
     strengths: list[str]
     warnings: list[str]
     recommendations: list[str]
+    composition: Optional[FormatCompositionReport] = None
+
+
+def classify_member_role(member: PokemonState, team_format: TeamFormat) -> MemberRoleInfo:
+    """
+    Clasifica a un miembro del equipo en su rol táctico y competitivo según sus
+    estadísticas calculadas, objetos, habilidades, movimientos y el formato de batalla.
+    """
+    m_stats = calculate_all_stats(member)
+    hp = m_stats[StatName.HP]
+    atk = m_stats[StatName.ATK]
+    def_ = m_stats[StatName.DEF]
+    spa = m_stats[StatName.SPA]
+    spd = m_stats[StatName.SPD]
+    spe = m_stats[StatName.SPE]
+
+    it_norm = (member.item or "").strip().lower()
+    ab_norm = (member.ability or "").strip().lower()
+
+    eff_atk = atk * (1.5 if it_norm == "choice band" else 1.0) * (2.0 if ab_norm in {"huge power", "pure power"} else 1.0)
+    eff_spa = spa * (1.5 if it_norm == "choice specs" else 1.0)
+    eff_spe = spe * (1.5 if it_norm == "choice scarf" else 1.0)
+
+    eff_def = def_ * (1.5 if it_norm == "eviolite" else 1.0) * (2.0 if ab_norm == "fur coat" else (1.5 if ab_norm == "fluffy" else 1.0))
+    eff_spd = spd * (1.5 if it_norm in {"assault vest", "eviolite"} else 1.0) * (2.0 if ab_norm == "ice scales" else 1.0)
+
+    phys_bulk = hp * eff_def
+    spec_bulk = hp * eff_spd
+    max_offensive = max(eff_atk, eff_spa)
+
+    move_names = {mv.name.strip().lower() for mv in member.moves}
+    damaging_moves = [mv for mv in member.moves if mv.category != MoveCategory.STATUS and mv.base_power > 0]
+
+    has_redir = bool(move_names & REDIRECTION_MOVES)
+    has_sc = bool(move_names & SPEED_CONTROL_MOVES)
+    has_support = bool(move_names & SUPPORT_DISRUPT_MOVES)
+    has_recov = bool(move_names & RECOVERY_MOVES)
+    has_setup = bool(move_names & SETUP_MOVES)
+    has_piv = bool(move_names & PIVOT_MOVES)
+    has_hz_set = bool(move_names & HAZARD_SET_MOVES)
+    has_hz_rem = bool(move_names & HAZARD_REMOVE_MOVES)
+
+    disp_name = member.nickname or member.pokemon.name
+
+    has_defensive_item = it_norm in DEFENSIVE_ITEMS
+    has_offensive_item = it_norm in OFFENSIVE_ITEMS
+    has_defensive_ability = ab_norm in DEFENSIVE_ABILITIES
+    has_high_dual_bulk = (phys_bulk >= 19000 and spec_bulk >= 19000)
+
+    if team_format == TeamFormat.DOUBLES:
+        # Dúos / VGC
+        if has_redir:
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="SUPPORT_REDIR",
+                role_title="Soporte / Redirección",
+                role_icon="🎯",
+                is_damage_dealer=False,
+                is_tank=(phys_bulk >= 16000 or spec_bulk >= 16000),
+                is_support=True,
+                details="Redirige ataques enemigos (Follow Me / Rage Powder) para proteger al compañero atacante.",
+            )
+        if (has_sc and len(damaging_moves) <= 2) or (ab_norm == "prankster" and len(damaging_moves) <= 2):
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="SPEED_CONTROL",
+                role_title="Control de Velocidad / Support",
+                role_icon="⚡",
+                is_damage_dealer=False,
+                is_tank=(phys_bulk >= 16000 or spec_bulk >= 16000),
+                is_support=True,
+                details="Controla el orden de turno mediante Tailwind, Trick Room, Icy Wind o cambios de estado.",
+            )
+        if (("spore" in move_names or "yawn" in move_names) and len(damaging_moves) <= 1):
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="SUPPORT_DISRUPT",
+                role_title="Soporte / Disrupción Pura",
+                role_icon="🎯",
+                is_damage_dealer=False,
+                is_tank=(phys_bulk >= 16000 or spec_bulk >= 16000),
+                is_support=True,
+                details="Inutiliza rivales con sueño o cambios de estado para crear ventajas de posicionamiento.",
+            )
+
+        is_tank_profile = (
+            (has_defensive_item and (phys_bulk >= 16000 or spec_bulk >= 16000))
+            or (has_defensive_ability and (phys_bulk >= 16000 or spec_bulk >= 16000))
+            or has_high_dual_bulk
+        ) and not (has_offensive_item and (phys_bulk < 18000 or spec_bulk < 18000))
+
+        if is_tank_profile:
+            if max_offensive >= 135 and len(damaging_moves) >= 2:
+                return MemberRoleInfo(
+                    member_name=disp_name,
+                    species_name=member.pokemon.name,
+                    role_tag="BULKY_ATTACKER",
+                    role_title="Tanque / Atacante Bulky",
+                    role_icon="⚖️",
+                    is_damage_dealer=True,
+                    is_tank=True,
+                    is_support=("fake out" in move_names or has_piv or has_sc),
+                    details=f"Gran resistencia ({phys_bulk//1000}k bulk físico / {spec_bulk//1000}k bulk esp.) combinada con pegada ofensiva respetable.",
+                )
+            else:
+                return MemberRoleInfo(
+                    member_name=disp_name,
+                    species_name=member.pokemon.name,
+                    role_tag="TANK",
+                    role_title="Tanque Defensivo / Utilidad",
+                    role_icon="🛡️",
+                    is_damage_dealer=False,
+                    is_tank=True,
+                    is_support=True,
+                    details="Absorbe impactos rivales, desgasta con cambios de estado o asiste con utilidad sin buscar noqueos directos.",
+                )
+
+        return MemberRoleInfo(
+            member_name=disp_name,
+            species_name=member.pokemon.name,
+            role_tag="SWEEPER",
+            role_title="Atacante Principal / Sweeper",
+            role_icon="⚔️",
+            is_damage_dealer=True,
+            is_tank=False,
+            is_support=False,
+            details=f"Alta presión de noqueo ({'Físico' if eff_atk >= eff_spa else 'Especial'}) con {int(max_offensive)} de poder ofensivo.",
+        )
+
+    else:
+        # 1. Hazard Setter / Control de Campo especializado (con poco ataque directo)
+        if has_hz_set and len(damaging_moves) <= 2:
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="HAZARDS",
+                role_title="Hazard Setter / Entrada",
+                role_icon="🪨",
+                is_damage_dealer=False,
+                is_tank=(phys_bulk >= 16000 or spec_bulk >= 16000),
+                is_support=True,
+                details="Coloca rocas o púas (Stealth Rock / Spikes / Red Viscosa) para desgastar al rival en cada cambio.",
+            )
+
+        # 2. Pivote Defensivo (Momentum Pivot con U-turn / Volt Switch / Parting Shot + Bulk)
+        if has_piv and (has_defensive_item or phys_bulk >= 16000 or spec_bulk >= 16000) and not (has_offensive_item and max_offensive >= 150):
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="PIVOT",
+                role_title="Pivote Defensivo / VoltTurn",
+                role_icon="🔄",
+                is_damage_dealer=(max_offensive >= 140),
+                is_tank=True,
+                is_support=True,
+                details="Mantiene la iniciativa con U-turn / Volt Switch / Parting Shot absorbiendo golpes.",
+            )
+
+        # 3. Muralla Física (Physical Wall)
+        is_phys_wall = (
+            (phys_bulk >= 18000 and phys_bulk >= spec_bulk * 1.05)
+            or (member.nature in {Nature.IMPISH, Nature.BOLD, Nature.RELAXED} and phys_bulk >= 16000)
+            or (ab_norm in {"fur coat", "unaware"} and phys_bulk >= 15000)
+        ) and not (has_offensive_item and max_offensive >= 145)
+
+        if is_phys_wall:
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="PHYSICAL_WALL",
+                role_title="Muralla Física (Physical Wall)",
+                role_icon="🛡️",
+                is_damage_dealer=(max_offensive >= 140 and len(damaging_moves) >= 3),
+                is_tank=True,
+                is_support=(has_hz_set or has_piv or has_hz_rem),
+                details=f"Especialista en absorber daño físico ({phys_bulk//1000}k bulk) y frenar atacantes físicos rivales.",
+            )
+
+        # 4. Muralla Especial (Special Wall)
+        is_spec_wall = (
+            (spec_bulk >= 18000 and spec_bulk >= phys_bulk * 1.05)
+            or (it_norm == "assault vest" and spec_bulk >= 16000)
+            or (member.nature in {Nature.CALM, Nature.CAREFUL, Nature.SASSY} and spec_bulk >= 16000)
+            or (ab_norm in {"ice scales", "vessel of ruin"} and spec_bulk >= 15000)
+        ) and not (has_offensive_item and max_offensive >= 145)
+
+        if is_spec_wall:
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="SPECIAL_WALL",
+                role_title="Muralla Especial (Special Wall)",
+                role_icon="🔮",
+                is_damage_dealer=(max_offensive >= 140 and len(damaging_moves) >= 3),
+                is_tank=True,
+                is_support=(has_hz_set or has_piv or has_hz_rem),
+                details=f"Especialista en absorber daño especial ({spec_bulk//1000}k bulk) frente a atacantes especiales rivales.",
+            )
+
+        # 5. Setup Sweeper / Cleaner
+        if has_setup or (it_norm == "choice scarf" and max_offensive >= 135):
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="SWEEPER",
+                role_title="Setup Sweeper / Cleaner",
+                role_icon="🧹",
+                is_damage_dealer=True,
+                is_tank=False,
+                is_support=False,
+                details="Aumenta sus estadísticas con movimientos de boosteo o limpia al final con velocidad.",
+            )
+
+        # 6. Wallbreaker (Rompedor de Murallas)
+        if max_offensive >= 145 or has_offensive_item or len(damaging_moves) >= 3:
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="WALLBREAKER",
+                role_title="Wallbreaker (Rompedor de Murallas)",
+                role_icon="💥",
+                is_damage_dealer=True,
+                is_tank=has_high_dual_bulk,
+                is_support=False,
+                details=f"Inmensa pegada inmediata ({int(max_offensive)} poder ofensivo) para demoler murallas rivales.",
+            )
+
+        if max_offensive >= 135:
+            return MemberRoleInfo(
+                member_name=disp_name,
+                species_name=member.pokemon.name,
+                role_tag="ATTACKER",
+                role_title="Atacante General",
+                role_icon="⚔️",
+                is_damage_dealer=True,
+                is_tank=False,
+                is_support=False,
+                details="Aporta daño ofensivo general al equipo.",
+            )
+        return MemberRoleInfo(
+            member_name=disp_name,
+            species_name=member.pokemon.name,
+            role_tag="TANK_GENERAL",
+            role_title="Tanque / Apoyo Defensivo",
+            role_icon="🛡️",
+            is_damage_dealer=False,
+            is_tank=True,
+            is_support=True,
+            details="Aporta presencia defensiva y absorción de turnos.",
+        )
+
+
+def audit_format_composition(
+    team: list[PokemonState],
+    roles: list[MemberRoleInfo],
+    team_format: TeamFormat,
+    warnings: list[str],
+    recommendations: list[str],
+    strengths: list[str],
+) -> tuple[FormatCompositionReport, int]:
+    """
+    Evalúa si al equipo le falta daño, le faltan tanques o si está desequilibrado
+    según las reglas y dinámicas de Dúos (VGC) o 6v6 Singles. Devuelve el reporte y el ajuste de puntuación.
+    """
+    score_mod = 0
+    pure_attackers = sum(1 for r in roles if r.is_damage_dealer and not r.is_tank)
+    bulky_attackers = sum(1 for r in roles if r.is_damage_dealer and r.is_tank)
+    pure_tanks = sum(1 for r in roles if r.is_tank and not r.is_damage_dealer)
+    pure_supports = sum(1 for r in roles if r.is_support and not r.is_damage_dealer and not r.is_tank)
+    total_attackers = pure_attackers + bulky_attackers
+    total_tanks = pure_tanks + bulky_attackers
+    supports_count = sum(1 for r in roles if r.is_support)
+
+    if team_format == TeamFormat.DOUBLES:
+        # ==========================
+        # AUDITORÍA PARA DÚOS / VGC
+        # ==========================
+        # 1. ¿Te falta daño?
+        if total_attackers <= 1:
+            dmg_title = "¿Te falta daño?: SÍ, FALTA DE DAÑO CRÍTICA"
+            dmg_status = "CRITICAL"
+            dmg_desc = (
+                f"Tu equipo solo cuenta con {total_attackers} atacante con suficiente pegada. "
+                "En Dúos los combates se deciden en 6 a 8 turnos. "
+                "Si el rival noquea o neutraliza a tu único atacante (con Fake Out, Intimidate o fuego concentrado), "
+                "te quedarás sin capacidad de respuesta ni daño para cerrar la partida."
+            )
+            warnings.append(f"Falta grave de daño en Dúos: solo tienes {total_attackers}/6 atacantes principales.")
+            recommendations.append("Incorpora al menos 1 o 2 atacantes con alta presión ofensiva inmediata (ej. Urshifu, Flutter Mane, Chien-Pao, Chi-Yu o Raging Bolt) con Choice item, Life Orb o Booster Energy.")
+            score_mod -= 14
+        elif total_attackers == 2:
+            dmg_title = "¿Te falta daño?: AL LÍMITE (2 Atacantes)"
+            dmg_status = "WARNING"
+            dmg_desc = (
+                "Cuentas con 2 atacantes principales. Es un esquema jugable si tus apoyos desgastan bien, "
+                "pero la pérdida prematura de uno de ellos te dejará con muy poco margen para conseguir noqueos."
+            )
+            warnings.append("Profundidad de daño al límite en Dúos (2 atacantes): perder un atacante compromete seriamente tu victoria.")
+            recommendations.append("Valora dotar de un movimiento de cobertura ofensiva o mayor inversión en Ataque/SpA a alguno de tus tanques.")
+            score_mod -= 5
+        elif total_attackers in {3, 4, 5}:
+            dmg_title = "¿Te falta daño?: NO, POTENCIA OFENSIVA ÓPTIMA"
+            dmg_status = "OPTIMAL"
+            dmg_desc = (
+                f"Excelente profundidad ofensiva ({total_attackers} atacantes). "
+                "Tienes múltiples opciones para presionar al rival y castigar errores de posicionamiento."
+            )
+            strengths.append(f"Potencia ofensiva bien calibrada para Dúos ({total_attackers} atacantes con pegada sólida).")
+        else:
+            if total_tanks == 0:
+                dmg_title = "¿Te falta daño?: NO, PERO ES HIPEROFENSIVO FRÁGIL"
+                dmg_status = "WARNING"
+                dmg_desc = (
+                    f"Tienes {total_attackers} atacantes y 0 tanques. Todo tu equipo es 'Glass Cannon': "
+                    "tienes mucho daño pero eres extremadamente vulnerable ante ataques en área o Trick Room."
+                )
+            else:
+                dmg_title = "¿Te falta daño?: NO, ALTA PRESIÓN OFENSIVA"
+                dmg_status = "OPTIMAL"
+                dmg_desc = f"Alta concentración de daño ({total_attackers} atacantes con gran pegada)."
+
+        # 2. ¿Te faltan tanques?
+        if total_tanks == 0:
+            tank_title = "¿Te faltan tanques?: SÍ, FALTA DE TANQUES CRÍTICA"
+            tank_status = "CRITICAL"
+            tank_desc = (
+                "No tienes ningún Pokémon con bulk defensivo, intimidación o redirección para absorber golpes. "
+                "Los ataques de área del rival (Make It Rain, Bleakwind Storm, Earthquake, Rock Slide) "
+                "o ataques dobles coordinados desmantelarán tu equipo sin que puedas pivotar."
+            )
+            warnings.append("Falta total de tanques o pivotes defensivos en Dúos (0 tanques en el equipo).")
+            recommendations.append("Añade al menos un tanque o pivote con utilidad defensiva (ej. Incineroar con Intimidate/Fake Out, Amoonguss con Redirección/Espora, o Rillaboom con Assault Vest) para absorber daño.")
+            score_mod -= 14
+        elif pure_tanks >= 3 or (pure_tanks >= 2 and total_attackers <= 2):
+            tank_title = "¿Te faltan tanques?: EXCESO DE TANQUES PASIVOS (DEMASIADO PASIVO)"
+            tank_status = "WARNING"
+            tank_desc = (
+                f"Tienes {pure_tanks} tanques/soportes puramente pasivos. En Dúos tener tantos tanques sin pegada vuelve al equipo excesivamente pasivo: "
+                "el rival ignorará a tus Pokémon pasivos y noqueará rápidamente a tus pocos atacantes."
+            )
+            warnings.append("Exceso de tanques pasivos en Dúos (equipo demasiado pasivo): te costará noquear Pokémon rivales antes de que ellos se posicionen.")
+            recommendations.append("Sustituye uno o dos de tus tanques pasivos por atacantes con mayor impacto inmediato o atacantes bulky.")
+            score_mod -= 8
+        else:
+            tank_title = "¿Te faltan tanques?: NO, PRESENCIA DEFENSIVA ÓPTIMA"
+            tank_status = "OPTIMAL"
+            tank_desc = (
+                f"Excelente equilibrio defensivo ({total_tanks} tanques/bulky pivots). "
+                "Cuentas con la resistencia necesaria para absorber ataques rivales y permitir rotaciones seguras."
+            )
+            strengths.append(f"Sólida presencia defensiva en Dúos ({total_tanks} tanques/bulky pivots para absorber golpes).")
+
+        all_moves = {mv.name.lower() for m in team for mv in m.moves}
+        if total_attackers >= 5 and total_tanks == 0:
+            archetype = "Hyper Offense VGC (Glass Cannon)"
+        elif pure_tanks >= 3 and total_attackers <= 2:
+            archetype = "Stall / Demasiado Pasivo (Riesgoso en VGC)"
+        elif "trick room" in all_moves:
+            archetype = "Trick Room Core VGC"
+        elif "tailwind" in all_moves and total_attackers >= 3:
+            archetype = "Tailwind Offense VGC"
+        else:
+            archetype = "Balance VGC (Equilibrado Oficial)"
+
+        report = FormatCompositionReport(
+            team_format=team_format,
+            archetype_label=archetype,
+            damage_dealers_count=total_attackers,
+            tanks_count=total_tanks,
+            supports_count=supports_count,
+            damage_verdict_title=dmg_title,
+            damage_verdict_status=dmg_status,
+            damage_verdict_desc=dmg_desc,
+            tank_verdict_title=tank_title,
+            tank_verdict_status=tank_status,
+            tank_verdict_desc=tank_desc,
+            role_assignments=roles,
+        )
+        return report, score_mod
+
+    else:
+        # ==========================
+        # AUDITORÍA PARA 6v6 SINGLES
+        # ==========================
+        wb_count = sum(1 for r in roles if r.role_tag == "WALLBREAKER")
+        sw_count = sum(1 for r in roles if r.role_tag == "SWEEPER")
+        phys_w_count = sum(1 for r in roles if r.role_tag == "PHYSICAL_WALL")
+        spec_w_count = sum(1 for r in roles if r.role_tag == "SPECIAL_WALL")
+        piv_count = sum(1 for r in roles if r.role_tag == "PIVOT" or (r.is_support and any(mv.name.lower() in PIVOT_MOVES for mv in team[roles.index(r)].moves)))
+        hz_count = sum(1 for m in team if any(mv.name.lower() in HAZARD_SET_MOVES for mv in m.moves))
+
+        total_offensive = wb_count + sw_count + sum(1 for r in roles if r.is_damage_dealer and r.role_tag not in {"WALLBREAKER", "SWEEPER"})
+        total_walls = phys_w_count + spec_w_count + sum(1 for r in roles if r.is_tank and r.role_tag not in {"PHYSICAL_WALL", "SPECIAL_WALL"})
+
+        # 1. ¿Te falta daño / Wallbreakers?
+        if (wb_count + sw_count) <= 1:
+            dmg_title = "¿Te falta daño / Wallbreakers?: SÍ, FALTA DE DAÑO EN 6v6"
+            dmg_status = "CRITICAL"
+            dmg_desc = (
+                f"Solo tienes {wb_count + sw_count} Wallbreaker/Sweeper dedicado. "
+                "En 6v6 los combates duran 20 a 50+ turnos y te enfrentarás a murallas como Blissey, Ting-Lu, Dondozo o Corviknight. "
+                "Sin atacantes con Choice Band/Specs o boosteos de Swords Dance/Nasty Plot, tus golpes serán absorbidos "
+                "y curados con Roost/Slack Off, dejándote totalmente atascado y vulnerable al desgaste (Stall)."
+            )
+            warnings.append("Falta de Wallbreakers en 6v6: no tienes suficiente pegada para derribar murallas defensivas rivales.")
+            recommendations.append("Incorpora al menos 1 o 2 Wallbreakers dedicados (ej. Great Tusk, Iron Valiant, Kingambit, Gholdengo, Kyurem) con Choice Band/Specs o movimientos de boosteo.")
+            score_mod -= 14
+        elif (wb_count + sw_count) in {2, 3, 4}:
+            dmg_title = "¿Te falta daño / Wallbreakers?: NO, PODER DE RUPTURA ÓPTIMO"
+            dmg_status = "OPTIMAL"
+            dmg_desc = (
+                f"Excelente potencia ofensiva ({wb_count} Wallbreakers / {sw_count} Sweepers). "
+                "Tienes las herramientas necesarias para presionar a núcleos defensivos y rematar partidas."
+            )
+            strengths.append(f"Capacidad de Wallbreaking y limpieza sobresaliente para 6v6 ({wb_count + sw_count} atacantes clave).")
+        else:
+            dmg_title = "¿Te falta daño / Wallbreakers?: NO, HIPEROFENSIVO PURO"
+            dmg_status = "OPTIMAL"
+            dmg_desc = f"Alta presión ofensiva continua ({wb_count + sw_count} atacantes)."
+
+        # 2. ¿Te faltan murallas / tanques?
+        if phys_w_count == 0 and spec_w_count == 0 and total_walls <= 1:
+            tank_title = "¿Te faltan murallas / tanques?: SÍ, SIN COLUMNA DEFENSIVA EN 6v6"
+            tank_status = "CRITICAL"
+            tank_desc = (
+                "No dispones de ninguna muralla física ni especial dedicada. "
+                "En 6v6 hay continuos cambios de Pokémon: sin murallas donde apoyarte, "
+                "cada vez que el rival fuerce un cambio o entre con ventaja, perderás un Pokémon en el turno de entrada."
+            )
+            warnings.append("Sin columna defensiva (Murallas) en 6v6: careces de switch-ins seguros para absorber daño en los cambios.")
+            recommendations.append("Incorpora una columna defensiva mixta: una muralla física (ej. Great Tusk, Corviknight, Dondozo, Gliscor) y una especial (ej. Clodsire, Ting-Lu, Blissey, Slowking-Galar).")
+            score_mod -= 14
+        elif phys_w_count == 0 and spec_w_count == 0:
+            tank_title = "¿Te faltan murallas / tanques?: AVISO, SIN MURALLAS PURAS DEDICADAS"
+            tank_status = "WARNING"
+            tank_desc = (
+                f"Tienes {total_walls} Pokémon con resistencia o pivoteo, pero careces de murallas defensivas puras "
+                "con recuperación (como Corviknight, Ting-Lu, Clodsire o Dondozo) para soportar el desgaste en partidas largas de 6v6."
+            )
+            warnings.append("Sin muralla pura dedicada en 6v6 (ni física ni especial): alta exigencia y desgaste en tus rotaciones.")
+            recommendations.append("Incorpora al menos una muralla pura física o especial con movimiento de recuperación (Roost, Slack Off, Recover).")
+            score_mod -= 6
+        elif phys_w_count == 0:
+            tank_title = "¿Te faltan murallas / tanques?: AVISO, SIN MURALLA FÍSICA DEDICADA"
+            tank_status = "WARNING"
+            tank_desc = (
+                "Tienes presencia defensiva pero careces de una Muralla Física dedicada. "
+                "Atacantes físicos contundentes como Great Tusk, Dragonite, Roaring Moon o Kingambit "
+                "podrán entrar y golpear sin que tengas un escudo seguro con el que frenarlos."
+            )
+            warnings.append("Sin muralla física dedicada en 6v6: alta vulnerabilidad ante amenazas ofensivas físicas.")
+            recommendations.append("Añade una muralla con alta Defensa física y recuperación o intimidación (ej. Corviknight con Roost, Dondozo, o Skarmory).")
+            score_mod -= 6
+        elif spec_w_count == 0:
+            tank_title = "¿Te faltan murallas / tanques?: AVISO, SIN MURALLA ESPECIAL DEDICADA"
+            tank_status = "WARNING"
+            tank_desc = (
+                "Tienes presencia defensiva pero careces de una Muralla Especial dedicada. "
+                "Atacantes especiales como Gholdengo, Walking Wake, Darkrai o Dragapult "
+                "te causarán graves problemas al no disponer de una esponja con la que absorber sus ataques."
+            )
+            warnings.append("Sin muralla especial dedicada en 6v6: alta vulnerabilidad ante atacantes especiales rivales.")
+            recommendations.append("Añade una muralla con alta Defensa Especial o Assault Vest (ej. Ting-Lu, Clodsire con Unaware, o Blissey/Slowking-Galar).")
+            score_mod -= 6
+        else:
+            tank_title = "¿Te faltan murallas / tanques?: NO, COLUMNA DEFENSIVA COMPLETA"
+            tank_status = "OPTIMAL"
+            tank_desc = (
+                f"Excelente base defensiva ({phys_w_count} Murallas Físicas / {spec_w_count} Murallas Especiales). "
+                "Dispones de respuestas sólidas para rotar de forma segura ante ambos tipos de atacantes."
+            )
+            strengths.append(f"Columna defensiva mixta completa para 6v6 ({phys_w_count} físicas / {spec_w_count} especiales).")
+
+        if total_offensive >= 5 and total_walls == 0:
+            archetype = "6v6 Hyper Offense (HO)"
+        elif total_walls >= 4 and total_offensive <= 1:
+            archetype = "6v6 Stall / Muy Pasivo"
+        elif total_walls >= 2 and total_offensive >= 2 and (piv_count >= 1 or hz_count >= 1):
+            archetype = "6v6 Bulky Offense / Balance Competitivo"
+        elif total_walls >= 2:
+            archetype = "6v6 Balance Tradicional"
+        else:
+            archetype = "6v6 Offense Estándar"
+
+        report = FormatCompositionReport(
+            team_format=team_format,
+            archetype_label=archetype,
+            damage_dealers_count=total_offensive,
+            tanks_count=total_walls,
+            supports_count=piv_count + hz_count,
+            wallbreakers_count=wb_count,
+            sweepers_count=sw_count,
+            physical_walls_count=phys_w_count,
+            special_walls_count=spec_w_count,
+            pivots_count=piv_count,
+            hazard_controllers_count=hz_count,
+            damage_verdict_title=dmg_title,
+            damage_verdict_status=dmg_status,
+            damage_verdict_desc=dmg_desc,
+            tank_verdict_title=tank_title,
+            tank_verdict_status=tank_status,
+            tank_verdict_desc=tank_desc,
+            role_assignments=roles,
+        )
+        return report, score_mod
 
 
 def analyze_team(team: list[PokemonState], team_format: TeamFormat = TeamFormat.DOUBLES) -> TeamAnalysisReport:
@@ -576,6 +1191,18 @@ def analyze_team(team: list[PokemonState], team_format: TeamFormat = TeamFormat.
         if all_move_names & setup_moves:
             strengths.append(f"Condición de victoria (Win-Condition) de Setup presente ({', '.join(all_move_names & setup_moves).title()}).")
 
+    # 6. Clasificación de roles miembro por miembro y auditoría de composición (Daño vs Tanques vs Soporte)
+    roles: list[MemberRoleInfo] = [classify_member_role(m, team_format) for m in team]
+    comp_report, comp_score_mod = audit_format_composition(
+        team=team,
+        roles=roles,
+        team_format=team_format,
+        warnings=warnings,
+        recommendations=recommendations,
+        strengths=strengths,
+    )
+    score += comp_score_mod
+
     score = max(15, min(100, score))
     if score >= 85:
         verdict = "EXCELENTE / COMPETITIVAMENTE EQUILIBRADO"
@@ -608,4 +1235,5 @@ def analyze_team(team: list[PokemonState], team_format: TeamFormat = TeamFormat.
         strengths=strengths,
         warnings=warnings,
         recommendations=recommendations,
+        composition=comp_report,
     )

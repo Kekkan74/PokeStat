@@ -103,4 +103,76 @@ def test_team_loader_and_analyzer_duos_vs_6v6():
     # Este equipo está diseñado para VGC/Dúos (Protect, Tailwind, Fake Out), por lo que puntúa más alto en Dúos que en 6v6 (donde faltan Stealth Rock / Rapid Spin)
     assert rep_duos.balance_score > rep_6v6.balance_score
     assert len(rep_duos.speed_tiers) == 6
+    assert rep_duos.composition is not None
+    assert rep_duos.composition.damage_dealers_count >= 4
+    assert rep_duos.composition.damage_verdict_status == "OPTIMAL"
+    assert rep_duos.composition.tank_verdict_status == "OPTIMAL"
+
+    # En 6v6 detecta que tiene atacantes pero carece de Hazards y murallas de recuperación dedicadas
+    assert rep_6v6.composition is not None
+    assert rep_6v6.composition.wallbreakers_count >= 2
+    assert rep_6v6.composition.pivots_count >= 2
+
+
+def test_lack_of_damage_detected_in_duos():
+    blissey = PokemonState(
+        pokemon=resolve_pokemon("Blissey"),
+        nature=Nature.BOLD,
+        moves=[resolve_move("Soft-Boiled"), resolve_move("Protect")],
+        item="Leftovers",
+    )
+    amoonguss = PokemonState(
+        pokemon=resolve_pokemon("Amoonguss"),
+        nature=Nature.CALM,
+        moves=[resolve_move("Spore"), resolve_move("Rage Powder"), resolve_move("Protect")],
+        item="Sitrus Berry",
+    )
+    clefairy = PokemonState(
+        pokemon=resolve_pokemon("Clefairy"),
+        nature=Nature.BOLD,
+        moves=[resolve_move("Follow Me"), resolve_move("Helping Hand"), resolve_move("Protect")],
+        item="Eviolite",
+    )
+    dusclops = PokemonState(
+        pokemon=resolve_pokemon("Dusclops"),
+        nature=Nature.RELAXED,
+        moves=[resolve_move("Trick Room"), resolve_move("Will-O-Wisp"), resolve_move("Pain Split")],
+        item="Eviolite",
+    )
+    passive_team = [blissey, amoonguss, clefairy, dusclops]
+    rep = analyze_team(passive_team, TeamFormat.DOUBLES)
+
+    assert rep.composition is not None
+    assert rep.composition.damage_verdict_status == "CRITICAL"
+    assert "falta de daño" in rep.composition.damage_verdict_title.lower()
+
+
+def test_lack_of_tanks_detected_in_duos():
+    flutter = PokemonState(
+        pokemon=resolve_pokemon("Flutter Mane"),
+        nature=Nature.TIMID,
+        moves=[resolve_move("Moonblast"), resolve_move("Shadow Ball")],
+        item="Booster Energy",
+        evs=StatSpread(spa=252, spe=252),
+    )
+    chien_pao = PokemonState(
+        pokemon=resolve_pokemon("Chien-Pao"),
+        nature=Nature.JOLLY,
+        moves=[resolve_move("Icicle Crash"), resolve_move("Sucker Punch")],
+        item="Focus Sash",
+        evs=StatSpread(atk=252, spe=252),
+    )
+    greninja = PokemonState(
+        pokemon=resolve_pokemon("Greninja"),
+        nature=Nature.TIMID,
+        moves=[resolve_move("Hydro Pump"), resolve_move("Dark Pulse")],
+        item="Life Orb",
+        evs=StatSpread(spa=252, spe=252),
+    )
+    fragile_team = [flutter, chien_pao, greninja]
+    rep = analyze_team(fragile_team, TeamFormat.DOUBLES)
+
+    assert rep.composition is not None
+    assert rep.composition.tank_verdict_status == "CRITICAL"
+    assert "falta de tanques" in rep.composition.tank_verdict_title.lower()
 
