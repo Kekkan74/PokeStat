@@ -170,7 +170,6 @@ def _render_pokemon_member_card(idx: int, state: PokemonState, role_info: Option
     if state.tera_type:
         badges += f" [dim]│[/dim] [bold magenta]Tera:[/bold magenta] {_type_badge(state.tera_type, short=True)}"
 
-    role_badge = ""
     if role_info:
         if "SWEEPER" in role_info.role_tag or "WALLBREAKER" in role_info.role_tag or "ATTACKER" in role_info.role_tag:
             role_style = "bold bright_white on red"
@@ -182,7 +181,9 @@ def _render_pokemon_member_card(idx: int, state: PokemonState, role_info: Option
             role_style = "bold black on bright_cyan"
         else:
             role_style = "bold black on bright_green"
-        role_badge = f"\n[cyan]Rol:[/cyan] [{role_style}] {role_info.role_icon} {role_info.role_title.upper()} [/{role_style}] [dim]• {role_info.details}[/dim]"
+        role_line = f" [dim]│[/dim] [{role_style}] {role_info.role_icon} {role_info.role_title} [/{role_style}]"
+    else:
+        role_line = ""
 
     stat_colors = {
         StatName.HP: "bright_green",
@@ -208,7 +209,7 @@ def _render_pokemon_member_card(idx: int, state: PokemonState, role_info: Option
         mod = state.nature.get_modifier(st)
         nat_sym = "[bold bright_green]+[/bold bright_green]" if mod > 1.0 else ("[bold bright_red]-[/bold bright_red]" if mod < 1.0 else " ")
         ev_str = f"[yellow]{ev:>3} EV[/yellow]" if ev > 0 else "[dim]  0 EV[/dim]"
-        bar = _stat_bar(val, max_scale=230 if st == StatName.HP else 210, width=8, color=stat_colors[st])
+        bar = _stat_bar(val, max_scale=230 if st == StatName.HP else 210, width=7, color=stat_colors[st])
         stat_lines.append(f"[bold]{stat_labels[st]}[/bold]{nat_sym} [bold white]{val:>3}[/bold white] {bar} ({ev_str})")
 
     moves_lines = []
@@ -221,23 +222,22 @@ def _render_pokemon_member_card(idx: int, state: PokemonState, role_info: Option
 
     rem_evs = state.evs.remaining_evs
     ev_status = (
-        f"[bold bright_green]508/508 EVs Completos[/bold bright_green]"
+        f"[bold bright_green]508/508 EVs[/bold bright_green]"
         if rem_evs == 0
         else f"[bold yellow]{state.evs.total}/508 EVs ({rem_evs} libres)[/bold yellow]"
     )
 
     body = (
-        f"{badges}{role_badge}\n"
+        f"{badges}{role_line}\n"
         f"[cyan]Habilidad:[/cyan] [bold yellow]{state.ability or 'Ninguna'}[/bold yellow] │ "
         f"[cyan]Objeto:[/cyan] [bold white]{state.item or 'Ninguno'}[/bold white]\n"
         f"[cyan]Naturaleza:[/cyan] [bold bright_cyan]{state.nature.value}[/bold bright_cyan] │ {ev_status}\n"
-        f"[dim]{'─' * 36}[/dim]\n"
+        f"[dim]{'─' * 30}[/dim]\n"
         + "\n".join(stat_lines)
-        + f"\n[dim]{'─' * 36}[/dim]\n"
+        + f"\n[dim]{'─' * 30}[/dim]\n"
         + "\n".join(moves_lines)
     )
 
-    # Formateo de título con Apodo y Género
     title_parts = [f"#{idx}"]
     if state.nickname:
         title_parts.append(f'"{state.nickname}" ({state.pokemon.name})')
@@ -256,6 +256,63 @@ def _render_pokemon_member_card(idx: int, state: PokemonState, role_info: Option
     )
 
 
+def _render_team_overview_table(report: TeamAnalysisReport) -> Table:
+    """Tabla panorámica del equipo completo con roles, tipos, objetos, habilidades y velocidad."""
+    table = Table(
+        box=box.ROUNDED,
+        border_style="bright_cyan",
+        header_style="bold bright_white on dark_blue",
+        expand=True,
+        title="👥 ROSTER DEL EQUIPO (RESUMEN PANORÁMICO)",
+        caption="[dim]Tip: Comprueba que cada Pokémon tenga un rol claro y que cubra las debilidades del resto.[/dim]",
+    )
+    table.add_column("#", justify="center", width=3, no_wrap=True, style="dim")
+    table.add_column("Pokémon", justify="left", style="bold white")
+    table.add_column("Tipos / Tera", justify="left")
+    table.add_column("Rol Táctico", justify="left")
+    table.add_column("Habilidad / Objeto", justify="left")
+    table.add_column("Vel", justify="right", style="bold yellow", width=5, no_wrap=True)
+
+    for idx, member in enumerate(report.team, start=1):
+        g_sym = "♂" if member.gender == Gender.MALE else ("♀" if member.gender == Gender.FEMALE else "⚲")
+        g_col = "bright_blue" if member.gender == Gender.MALE else ("bright_magenta" if member.gender == Gender.FEMALE else "dim")
+        if member.nickname:
+            poke_label = f'"{member.nickname}" [{g_col}]{g_sym}[/{g_col}]\n[dim]{member.pokemon.name}[/dim]'
+        else:
+            poke_label = f"{member.pokemon.name} [{g_col}]{g_sym}[/{g_col}]"
+
+        t_str = " ".join(_type_badge(t, short=True) for t in member.pokemon.types)
+        if member.tera_type:
+            t_str += f"\n[dim]Tera:[/dim] {_type_badge(member.tera_type, short=True)}"
+
+        role_info = report.composition.role_assignments[idx - 1] if (report.composition and idx - 1 < len(report.composition.role_assignments)) else None
+        if role_info:
+            if "SWEEPER" in role_info.role_tag or "WALLBREAKER" in role_info.role_tag or "ATTACKER" in role_info.role_tag:
+                r_col = "bold red"
+            elif "WALL" in role_info.role_tag or "TANK" in role_info.role_tag:
+                r_col = "bold blue"
+            elif "BULKY" in role_info.role_tag:
+                r_col = "bold yellow"
+            elif "PIVOT" in role_info.role_tag:
+                r_col = "bold cyan"
+            else:
+                r_col = "bold green"
+            role_cell = f"[{r_col}]{role_info.role_icon} {role_info.role_title}[/{r_col}]"
+        else:
+            role_cell = "[dim]General[/dim]"
+
+        ab_txt = member.ability or "—"
+        it_txt = member.item or "—"
+        meta_cell = f"[bold yellow]{ab_txt}[/bold yellow]\n[white]{it_txt}[/white]"
+
+        stats = calculate_all_stats(member)
+        spe_val = stats[StatName.SPE]
+
+        table.add_row(str(idx), poke_label, t_str, role_cell, meta_cell, str(spe_val))
+
+    return table
+
+
 def _render_format_composition_panel(report: TeamAnalysisReport) -> Panel:
     """Renderiza el panel especializado de balance de roles y diagnóstico de Daño vs Tanques adaptado al formato."""
     comp = report.composition
@@ -267,15 +324,26 @@ def _render_format_composition_panel(report: TeamAnalysisReport) -> Panel:
     fmt_txt = "DÚOS / VGC (DOBLES)" if is_doubles else "6v6 SINGLES / RANDOMLOCKE"
     arch_badge = f"[bold bright_white on blue]  ARQUETIPO DETECTADO: {comp.archetype_label.upper()}  [/bold bright_white on blue]"
 
+    def _status_badge(status: str, title: str) -> str:
+        if status == "OPTIMAL":
+            return f"[bold black on bright_green]  {title.upper()}  [/bold black on bright_green]"
+        elif status == "WARNING":
+            return f"[bold black on gold1]  {title.upper()}  [/bold black on gold1]"
+        else:
+            return f"[bold bright_white on red]  {title.upper()}  [/bold bright_white on red]"
+
+    dmg_badge = _status_badge(comp.damage_verdict_status, comp.damage_verdict_title)
+    tank_badge = _status_badge(comp.tank_verdict_status, comp.tank_verdict_title)
+
     role_bar_lines = []
     if is_doubles:
         dmg_bar = _stat_bar(comp.damage_dealers_count, max_scale=6, width=12, color="bright_red")
         tank_bar = _stat_bar(comp.tanks_count, max_scale=6, width=12, color="bright_blue")
         supp_bar = _stat_bar(comp.supports_count, max_scale=6, width=12, color="bright_green")
 
-        role_bar_lines.append(f"• [bold red]⚔️ Atacantes Principales / Presión de Daño:[/bold red]  [bold white]{comp.damage_dealers_count}/{n_members}[/bold white]  {dmg_bar}")
-        role_bar_lines.append(f"• [bold blue]🛡️ Tanques / Bulky Pivots / Absorción:[/bold blue]       [bold white]{comp.tanks_count}/{n_members}[/bold white]  {tank_bar}")
-        role_bar_lines.append(f"• [bold green]🎯 Soporte / Redirección / Speed Control:[/bold green]     [bold white]{comp.supports_count}/{n_members}[/bold white]  {supp_bar}")
+        role_bar_lines.append(f"• [bold red]⚔️ Atacantes Principales (Pegada):[/bold red]       [bold white]{comp.damage_dealers_count}/{n_members}[/bold white]  {dmg_bar}  [dim](Generan presión de daño para conseguir KOs)[/dim]")
+        role_bar_lines.append(f"• [bold blue]🛡️ Tanques & Bulky Pivots (Resistencia):[/bold blue]      [bold white]{comp.tanks_count}/{n_members}[/bold white]  {tank_bar}  [dim](Absorben ataques y permiten reposicionarse)[/dim]")
+        role_bar_lines.append(f"• [bold green]🎯 Soporte & Control (Velocidad/Disrupción):[/bold green] [bold white]{comp.supports_count}/{n_members}[/bold white]  {supp_bar}  [dim](Tailwind, Trick Room, Fake Out, Espora...)[/dim]")
     else:
         wb_sw = comp.wallbreakers_count + comp.sweepers_count
         wb_bar = _stat_bar(wb_sw, max_scale=6, width=12, color="bright_red")
@@ -284,205 +352,61 @@ def _render_format_composition_panel(report: TeamAnalysisReport) -> Panel:
         piv_bar = _stat_bar(comp.pivots_count, max_scale=6, width=12, color="bright_cyan")
         hz_bar = _stat_bar(comp.hazard_controllers_count, max_scale=6, width=12, color="green")
 
-        role_bar_lines.append(f"• [bold red]💥 Wallbreakers & Sweepers (Pegada):[/bold red]       [bold white]{wb_sw}/{n_members}[/bold white]  {wb_bar}")
-        role_bar_lines.append(f"• [bold yellow]🛡️ Murallas Físicas (Physical Walls):[/bold yellow]     [bold white]{comp.physical_walls_count}/{n_members}[/bold white]  {phys_bar}")
-        role_bar_lines.append(f"• [bold magenta]🔮 Murallas Especiales (Special Walls):[/bold magenta]   [bold white]{comp.special_walls_count}/{n_members}[/bold white]  {spec_bar}")
-        role_bar_lines.append(f"• [bold cyan]🔄 Pivotes (VoltTurn / Momentum):[/bold cyan]         [bold white]{comp.pivots_count}/{n_members}[/bold white]  {piv_bar}")
-        role_bar_lines.append(f"• [bold green]🪨 Control de Hazards (Rocas / Púas):[/bold green]      [bold white]{comp.hazard_controllers_count}/{n_members}[/bold white]  {hz_bar}")
+        role_bar_lines.append(f"• [bold red]💥 Wallbreakers & Sweepers (Pegada):[/bold red]       [bold white]{wb_sw}/{n_members}[/bold white]  {wb_bar}  [dim](Rompen murallas y limpian en late-game)[/dim]")
+        role_bar_lines.append(f"• [bold yellow]🛡️ Murallas Físicas (Physical Walls):[/bold yellow]     [bold white]{comp.physical_walls_count}/{n_members}[/bold white]  {phys_bar}  [dim](Aguantan amenazas físicas del rival)[/dim]")
+        role_bar_lines.append(f"• [bold magenta]🔮 Murallas Especiales (Special Walls):[/bold magenta]   [bold white]{comp.special_walls_count}/{n_members}[/bold white]  {spec_bar}  [dim](Aguantan amenazas especiales del rival)[/dim]")
+        role_bar_lines.append(f"• [bold cyan]🔄 Pivotes (VoltTurn / Momentum):[/bold cyan]         [bold white]{comp.pivots_count}/{n_members}[/bold white]  {piv_bar}  [dim](U-turn, Volt Switch, Parting Shot...)[/dim]")
+        role_bar_lines.append(f"• [bold green]🪨 Control de Hazards (Rocas / Púas):[/bold green]      [bold white]{comp.hazard_controllers_count}/{n_members}[/bold white]  {hz_bar}  [dim](Stealth Rock, Spikes, Rapid Spin, Defog...)[/dim]")
 
-    def _status_color(st: str) -> str:
-        if st == "OPTIMAL":
-            return "bright_green"
-        elif st == "WARNING":
-            return "yellow"
-        else:
-            return "bright_red"
-
-    dmg_c = _status_color(comp.damage_verdict_status)
-    tank_c = _status_color(comp.tank_verdict_status)
-
-    dmg_box = (
-        f"[bold {dmg_c}]{comp.damage_verdict_title}[/bold {dmg_c}]\n\n"
-        f"[white]{comp.damage_verdict_desc}[/white]"
-    )
-
-    tank_box = (
-        f"[bold {tank_c}]{comp.tank_verdict_title}[/bold {tank_c}]\n\n"
-        f"[white]{comp.tank_verdict_desc}[/white]"
-    )
-
-    role_table = Table(
-        box=box.SIMPLE_HEAD,
-        expand=True,
-        header_style="bold bright_cyan",
-        border_style="dim",
-        padding=(0, 1),
-    )
-    role_table.add_column("#", justify="right", style="dim", width=3)
-    role_table.add_column("Pokémon", style="bold white", width=18)
-    role_table.add_column("Rol Asignado", justify="left", width=28)
-    role_table.add_column("Aporte Táctico", style="dim", justify="left")
-
-    for i, r in enumerate(comp.role_assignments, start=1):
-        if "SWEEPER" in r.role_tag or "WALLBREAKER" in r.role_tag or "ATTACKER" in r.role_tag:
-            r_col = "bold red"
-        elif "WALL" in r.role_tag or "TANK" in r.role_tag:
-            r_col = "bold blue"
-        elif "BULKY" in r.role_tag:
-            r_col = "bold yellow"
-        elif "PIVOT" in r.role_tag:
-            r_col = "bold cyan"
-        else:
-            r_col = "bold green"
-
-        r_badge = f"[{r_col}]{r.role_icon} {r.role_title}[/{r_col}]"
-        role_table.add_row(str(i), r.member_name, r_badge, r.details)
-
-    diag_grid = Table.grid(expand=True, padding=(0, 1))
-    diag_grid.add_column(ratio=1)
-    diag_grid.add_column(ratio=1)
-    diag_grid.add_row(
-        Panel(dmg_box, title="💥 Diagnóstico de Daño / Presión Ofensiva", border_style=dmg_c, box=box.ROUNDED),
-        Panel(tank_box, title="🛡️ Diagnóstico de Tanques / Presencia Defensiva", border_style=tank_c, box=box.ROUNDED),
-    )
-
-    body_group = Group(
-        Align.center(Text.from_markup(arch_badge)),
-        Text(""),
-        Text("Distribución de Roles y Responsabilidades del Equipo:", style="bold underline white"),
-        Text("\n".join(role_bar_lines)),
-        Text(""),
-        role_table,
-        Text(""),
-        diag_grid,
+    body_content = (
+        f"{arch_badge}\n\n"
+        f"[bold underline white]Distribución de Roles en {fmt_txt}:[/bold underline white]\n"
+        + "\n".join(role_bar_lines)
+        + f"\n\n[dim]{'─' * 65}[/dim]\n\n"
+        f"[bold]💥 PREGUNTA 1: ¿Te falta daño en {fmt_txt}?[/bold]\n"
+        f"   {dmg_badge}\n"
+        f"   [white]{comp.damage_verdict_desc}[/white]\n\n"
+        f"[bold]🛡️ PREGUNTA 2: ¿Te faltan tanques o defensas en {fmt_txt}?[/bold]\n"
+        f"   {tank_badge}\n"
+        f"   [white]{comp.tank_verdict_desc}[/white]"
     )
 
     return Panel(
-        body_group,
-        title=f"⚖️ COMPOSICIÓN DEL EQUIPO Y EQUILIBRIO DE ROLES ({fmt_txt})",
+        body_content,
+        title=f"⚖️ AUDITORÍA DE DAÑO Y TANQUES ({fmt_txt})",
         border_style="bright_yellow",
-        box=box.DOUBLE,
-        expand=True,
+        box=box.ROUNDED,
+        padding=(1, 2),
     )
 
 
 def render_team_dashboard(report: TeamAnalysisReport, source_label: str = "") -> None:
-    """Renderiza en terminal las tarjetas de todo el equipo, matriz defensiva, speed tiers y diagnóstico."""
+    """Renderiza en terminal el diagnóstico visual limpio, estructurado y fácil de entender."""
     team = report.team
+    is_doubles = (report.team_format == TeamFormat.DOUBLES)
+    fmt_txt = "Dúos VGC (Dobles)" if is_doubles else "6v6 Singles"
     fmt_badge = (
         "[bold black on bright_magenta] FORMATO: DÚOS / VGC (DOBLES) [/bold black on bright_magenta]"
-        if report.team_format == TeamFormat.DOUBLES
+        if is_doubles
         else "[bold black on bright_cyan] FORMATO: 6v6 SINGLES / RANDOMLOCKE [/bold black on bright_cyan]"
     )
 
+    # 1. Breadcrumb de navegación clara
+    _render_breadcrumb(["Inicio", "Análisis de Equipo", fmt_txt])
+
     console.print(
         Rule(
-            f"[bold bright_yellow]📋 ROSTER DEL EQUIPO ({len(team)} POKÉMON)[/bold bright_yellow] {fmt_badge}",
+            f"[bold bright_yellow]📋 ANÁLISIS INTEGRAL DEL EQUIPO ({len(team)} POKÉMON)[/bold bright_yellow] {fmt_badge}",
             style="bright_cyan",
         )
     )
 
-    # Mostrar tarjetas de Pokémon en filas de 2 columnas con sus roles
-    for i in range(0, len(team), 2):
-        row_grid = Table.grid(expand=True, padding=(0, 1))
-        row_grid.add_column(ratio=1)
-        row_grid.add_column(ratio=1)
-        role_left = report.composition.role_assignments[i] if (report.composition and i < len(report.composition.role_assignments)) else None
-        role_right = report.composition.role_assignments[i + 1] if (report.composition and (i + 1) < len(report.composition.role_assignments)) else None
-        left_card = _render_pokemon_member_card(i + 1, team[i], role_info=role_left)
-        right_card = _render_pokemon_member_card(i + 2, team[i + 1], role_info=role_right) if (i + 1) < len(team) else Text("")
-        row_grid.add_row(left_card, right_card)
-        console.print(row_grid)
+    # 2. Resumen Panorámico del Roster (Vista ejecutiva en tabla sin apretujones)
+    console.print(_render_team_overview_table(report))
 
-    # 2. Panel Especial de Composición y Auditoría de Roles (Dúos vs 6v6)
+    # 3. Panel Especial de Auditoría de Composición (¿Te falta daño? ¿Te faltan tanques?)
     if report.composition:
         console.print(_render_format_composition_panel(report))
-
-    # 3. Tabla de Sinergia Defensiva y Vulnerabilidades + Speed Tiers lado a lado
-    def_table = Table(
-        title="🛡️ Matriz de Resistencias y Debilidades Defensivas (Incluye Habilidades)",
-        caption="[dim]Leyenda: [bold bright_cyan]INM[/bold bright_cyan] = Daño 0x │ [bold bright_green]¼x[/bold bright_green]/[green]½x[/green] = Resistido │ [dim]·[/dim] = Daño 1x Neutro │ [bold yellow]2x[/bold yellow]/[bold white on red]4x[/bold white on red] = Débil[/dim]",
-        box=box.SIMPLE_HEAVY,
-        header_style="bold bright_cyan",
-        expand=True,
-    )
-    def_table.add_column("Tipo Atacante", justify="left")
-    for m in team:
-        display_label = m.nickname if m.nickname else m.pokemon.name
-        g_sym = "♂" if m.gender == Gender.MALE else ("♀" if m.gender == Gender.FEMALE else "⚲")
-        short_name = f"{display_label[:8]} {g_sym}"
-        def_table.add_column(short_name, justify="center")
-    def_table.add_column("Balance", justify="right")
-
-    for t in CORE_TYPES:
-        summ = report.defensive_matrix[t]
-        # Mostramos en la tabla todos los tipos donde hay alguna debilidad relevante o inmunidad destacada
-        cells = []
-        for mult in summ.per_member_multiplier:
-            if mult == 0.0:
-                cells.append("[bold bright_cyan]INM[/bold bright_cyan]")
-            elif mult == 0.25:
-                cells.append("[bold bright_green]¼x[/bold bright_green]")
-            elif mult == 0.5:
-                cells.append("[green]½x[/green]")
-            elif mult == 1.0:
-                cells.append("[dim]·[/dim]")
-            elif mult == 2.0:
-                cells.append("[bold yellow]2x[/bold yellow]")
-            else:
-                cells.append("[bold white on red]4x[/bold white on red]")
-
-        if summ.weak_count >= 3:
-            bal_str = f"[bold bright_red]⚠️ -{summ.weak_count} Déb[/bold bright_red]"
-        elif summ.weak_count >= 2 and (summ.resist_count + summ.immune_count) == 0:
-            bal_str = "[bold yellow]⚠️ Sin Res[/bold yellow]"
-        elif (summ.resist_count + summ.immune_count) > summ.weak_count:
-            bal_str = f"[bright_green]+{summ.resist_count + summ.immune_count} Res[/bright_green]"
-        else:
-            bal_str = "[dim]Neutro[/dim]"
-
-        def_table.add_row(_type_badge(t, short=True), *cells, bal_str)
-
-    console.print(def_table)
-
-    # 3. Speed Tiers + Cobertura Ofensiva lado a lado
-    sp_table = Table(
-        title="⚡ Speed Tiers del Equipo (Nivel Real)",
-        caption="[dim]Tip: Mayor velocidad ataca primero antes de cambios de prioridad.[/dim]",
-        box=box.ROUNDED,
-        border_style="yellow",
-        expand=True,
-    )
-    sp_table.add_column("#", justify="right", style="dim")
-    sp_table.add_column("Pokémon", style="bold white")
-    sp_table.add_column("Spe Final", justify="right", style="bold bright_yellow")
-    sp_table.add_column("Inversión / Naturaleza", style="cyan")
-    for rank, (p_name, spe_v, desc) in enumerate(report.speed_tiers, start=1):
-        sp_table.add_row(str(rank), p_name, str(spe_v), desc)
-
-    cov_badges = " ".join(_type_badge(t, short=True) for t in sorted(report.offensive_super_effective_coverage, key=lambda x: x.value))
-    uncov_badges = (
-        " ".join(_type_badge(t, short=True) for t in report.uncovered_offensive_types)
-        if report.uncovered_offensive_types
-        else "[bold bright_green]¡Cobertura Total 18/18 Tipos![/bold bright_green]"
-    )
-    cov_panel = Panel(
-        f"[bold white]Perfil Ofensivo:[/bold white] [bold bright_red]{report.physical_attackers} Físicos[/bold bright_red] │ "
-        f"[bold bright_magenta]{report.special_attackers} Especiales[/bold bright_magenta]\n\n"
-        f"[bold bright_green]Golpea Supereficaz ({len(report.offensive_super_effective_coverage)}/18 tipos):[/bold bright_green]\n{cov_badges}\n\n"
-        f"[bold yellow]Tipos sin respuesta Supereficaz ({len(report.uncovered_offensive_types)}):[/bold yellow]\n{uncov_badges}\n"
-        f"[dim]Tip: Añadir ataques de estos tipos te ayudará a no quedarte sin opciones.[/dim]",
-        title="🎯 Cobertura Ofensiva del Equipo",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-        expand=True,
-    )
-
-    mid_grid = Table.grid(expand=True, padding=(0, 1))
-    mid_grid.add_column(ratio=1)
-    mid_grid.add_column(ratio=1)
-    mid_grid.add_row(sp_table, cov_panel)
-    console.print(mid_grid)
 
     # 4. Sección especial: Vulnerabilidad FÍSICA vs ESPECIAL y Tipos más Peligrosos
     phys_col = "bright_red"
@@ -528,8 +452,9 @@ def render_team_dashboard(report: TeamAnalysisReport, source_label: str = "") ->
     type_threat_lines = []
     for rank, (t, weak_cnt, res_cnt) in enumerate(report.top_weakness_types[:4], start=1):
         warn_style = "bold bright_red" if weak_cnt >= 3 else "bold yellow"
+        res_text = f"[green]{res_cnt} res[/green]" if res_cnt > 0 else "[bold red]¡0 res! ⚠️[/bold red]"
         type_threat_lines.append(
-            f"[dim]#{rank}[/dim] {_type_badge(t, short=True)} ➔ [{warn_style}]{weak_cnt} débiles[/{warn_style}] / [green]{res_cnt} res-inm[/green]"
+            f"[dim]#{rank}[/dim] {_type_badge(t, short=True)} ➔ [{warn_style}]{weak_cnt} débiles[/{warn_style}] │ {res_text}"
         )
     if not type_threat_lines:
         type_threat_lines.append("[bold bright_green]¡Sin debilidades acumuladas destacadas![/bold bright_green]")
@@ -559,38 +484,145 @@ def render_team_dashboard(report: TeamAnalysisReport, source_label: str = "") ->
     threat_grid.add_row(bulk_panel, type_threat_panel)
     console.print(threat_grid)
 
-    # 5. Panel de Diagnóstico de Equilibrio y Propuestas de Mejora
+    # 5. Matriz de Resistencias y Debilidades Defensivas (con colores de alerta en filas)
+    def_table = Table(
+        title="🛡️ Matriz de Resistencias y Debilidades Defensivas (Incluye Habilidades)",
+        caption="[dim]Leyenda: [bold bright_cyan]INM[/bold bright_cyan] = Daño 0x │ [bold bright_green]¼x[/bold bright_green]/[green]½x[/green] = Resistido │ [dim]·[/dim] = Daño 1x Neutro │ [bold yellow]2x[/bold yellow]/[bold white on red]4x[/bold white on red] = Débil[/dim]",
+        box=box.ROUNDED,
+        header_style="bold bright_cyan",
+        border_style="dim",
+        expand=True,
+    )
+    def_table.add_column("Tipo Atacante", justify="left", width=14)
+    for m in team:
+        display_label = m.nickname if m.nickname else m.pokemon.name
+        short_name = display_label.split()[0] if len(display_label) > 10 else display_label
+        if len(short_name) > 8:
+            short_name = short_name[:7] + "…"
+        g_sym = "♂" if m.gender == Gender.MALE else ("♀" if m.gender == Gender.FEMALE else "⚲")
+        g_col = "bright_blue" if m.gender == Gender.MALE else ("bright_magenta" if m.gender == Gender.FEMALE else "dim")
+        def_table.add_column(f"{short_name} [{g_col}]{g_sym}[/{g_col}]", justify="center")
+    def_table.add_column("Balance Defensivo", justify="right", width=18)
+
+    for t in CORE_TYPES:
+        summ = report.defensive_matrix[t]
+        cells = []
+        for mult in summ.per_member_multiplier:
+            if mult == 0.0:
+                cells.append("[bold bright_cyan]INM[/bold bright_cyan]")
+            elif mult == 0.25:
+                cells.append("[bold bright_green]¼x[/bold bright_green]")
+            elif mult == 0.5:
+                cells.append("[green]½x[/green]")
+            elif mult == 1.0:
+                cells.append("[dim]·[/dim]")
+            elif mult == 2.0:
+                cells.append("[bold yellow]2x[/bold yellow]")
+            else:
+                cells.append("[bold white on red]4x[/bold white on red]")
+
+        if summ.weak_count >= 3:
+            bal_str = f"[bold bright_red]⚠️ {summ.weak_count} Débiles[/bold bright_red]"
+            row_style = "bold red"
+        elif summ.weak_count >= 2 and (summ.resist_count + summ.immune_count) == 0:
+            bal_str = "[bold yellow]⚠️ ¡Sin Resistencias![/bold yellow]"
+            row_style = "yellow"
+        elif (summ.resist_count + summ.immune_count) > summ.weak_count:
+            bal_str = f"[bright_green]+{summ.resist_count + summ.immune_count} Resisten[/bright_green]"
+            row_style = None
+        else:
+            bal_str = "[dim]Neutro (1x)[/dim]"
+            row_style = None
+
+        def_table.add_row(_type_badge(t, short=True), *cells, bal_str, style=row_style)
+
+    console.print(def_table)
+
+    # 6. Speed Tiers + Cobertura Ofensiva lado a lado
+    sp_table = Table(
+        title="⚡ Speed Tiers del Equipo (Nivel Real)",
+        caption="[dim]Tip: Mayor velocidad ataca primero antes de cambios de prioridad.[/dim]",
+        box=box.ROUNDED,
+        border_style="yellow",
+        expand=True,
+    )
+    sp_table.add_column("#", justify="right", style="dim", width=3)
+    sp_table.add_column("Pokémon", style="bold white")
+    sp_table.add_column("Spe Final", justify="right", style="bold bright_yellow")
+    sp_table.add_column("Inversión / Naturaleza", style="cyan")
+    for rank, (p_name, spe_v, desc) in enumerate(report.speed_tiers, start=1):
+        sp_table.add_row(str(rank), p_name, str(spe_v), desc)
+
+    cov_badges = " ".join(_type_badge(t, short=True) for t in sorted(report.offensive_super_effective_coverage, key=lambda x: x.value))
+    uncov_badges = (
+        " ".join(_type_badge(t, short=True) for t in report.uncovered_offensive_types)
+        if report.uncovered_offensive_types
+        else "[bold bright_green]¡Cobertura Total 18/18 Tipos![/bold bright_green]"
+    )
+    cov_panel = Panel(
+        f"[bold white]Perfil Ofensivo:[/bold white] [bold bright_red]{report.physical_attackers} Físicos[/bold bright_red] │ "
+        f"[bold bright_magenta]{report.special_attackers} Especiales[/bold bright_magenta]\n\n"
+        f"[bold bright_green]Golpea Supereficaz ({len(report.offensive_super_effective_coverage)}/18 tipos):[/bold bright_green]\n{cov_badges}\n\n"
+        f"[bold yellow]Tipos sin respuesta Supereficaz ({len(report.uncovered_offensive_types)}):[/bold yellow]\n{uncov_badges}\n"
+        f"[dim]Tip: Añadir ataques de estos tipos te ayudará a no quedarte sin opciones.[/dim]",
+        title="🎯 Cobertura Ofensiva del Equipo",
+        border_style="bright_magenta",
+        box=box.ROUNDED,
+        expand=True,
+    )
+
+    mid_grid = Table.grid(expand=True, padding=(0, 1))
+    mid_grid.add_column(ratio=1)
+    mid_grid.add_column(ratio=1)
+    mid_grid.add_row(sp_table, cov_panel)
+    console.print(mid_grid)
+
+    # 7. Detalle Individual de Miembros con Reparto de EVs
+    console.print(Rule("[bold bright_cyan]🔍 DETALLE Y REPARTO DE EVs POR POKÉMON[/bold bright_cyan]", style="dim"))
+    for i in range(0, len(team), 2):
+        row_grid = Table.grid(expand=True, padding=(0, 1))
+        row_grid.add_column(ratio=1)
+        row_grid.add_column(ratio=1)
+        role_left = report.composition.role_assignments[i] if (report.composition and i < len(report.composition.role_assignments)) else None
+        role_right = report.composition.role_assignments[i + 1] if (report.composition and (i + 1) < len(report.composition.role_assignments)) else None
+        left_card = _render_pokemon_member_card(i + 1, team[i], role_info=role_left)
+        right_card = _render_pokemon_member_card(i + 2, team[i + 1], role_info=role_right) if (i + 1) < len(team) else Text("")
+        row_grid.add_row(left_card, right_card)
+        console.print(row_grid)
+
+    # 8. Panel de Conclusiones y Consejos del Entrenador
     score = report.balance_score
     score_color = "bright_green" if score >= 85 else ("gold1" if score >= 70 else "bright_red")
-    score_bar = _hp_bar(score, 100, width=25).replace("HP", "Pts")
+    score_bar = _hp_bar(score, 100, width=22).replace("HP", "Pts")
 
-    diag_lines = [
-        f"Puntuación Global de Equilibrio ({report.team_format.value.upper()}): {score_bar} — [bold {score_color}]{report.verdict_label}[/bold {score_color}]\n"
+    audit_blocks = [
+        f"🏆 [bold]Calificación Global ({'Dúos VGC' if is_doubles else '6v6 Singles'}):[/bold]  {score_bar}  ➔  [bold {score_color}]{report.verdict_label}[/bold {score_color}]\n"
     ]
 
     if report.strengths:
-        diag_lines.append("[bold bright_green]✅ PUNTOS FUERTES DETECTADOS:[/bold bright_green]")
+        audit_blocks.append("[bold bright_green]✅ PUNTOS FUERTES DEL EQUIPO:[/bold bright_green]")
         for s in report.strengths:
-            diag_lines.append(f"   • [green]{s}[/green]")
-        diag_lines.append("")
+            audit_blocks.append(f"   [green]• {s}[/green]")
+        audit_blocks.append("")
 
     if report.warnings:
-        diag_lines.append("[bold yellow]⚠️  DESEQUILIBRIOS Y PROBLEMAS DETECTADOS:[/bold yellow]")
+        audit_blocks.append("[bold bright_yellow]⚠️  ASPECTOS A MEJORAR Y PUNTOS CIEGOS:[/bold bright_yellow]")
         for w in report.warnings:
-            diag_lines.append(f"   • [yellow]{w}[/yellow]")
-        diag_lines.append("")
+            audit_blocks.append(f"   [yellow]• {w}[/yellow]")
+        audit_blocks.append("")
 
     if report.recommendations:
-        diag_lines.append("[bold bright_cyan]💡 OPCIONES RECOMENDADAS PARA MEJORAR EL EQUIPO:[/bold bright_cyan]")
+        audit_blocks.append("[bold bright_cyan]💡 CONSEJOS TÁCTICOS RECOMENDADOS:[/bold bright_cyan]")
         for r in report.recommendations:
-            diag_lines.append(f"   ➔ [bright_white]{r}[/bright_white]")
+            audit_blocks.append(f"   [bright_white]➔ {r}[/bright_white]")
 
     console.print(
         Panel(
-            "\n".join(diag_lines),
-            title=f"🧠 AUDITORÍA TÁCTICA Y RECOMENDACIONES ({'DÚOS / VGC' if report.team_format == TeamFormat.DOUBLES else '6v6 SINGLES'})",
+            "\n".join(audit_blocks),
+            title=f"🧠 CONCLUSIONES Y CONSEJOS DEL ENTRENADOR ({'DÚOS / VGC' if is_doubles else '6v6 SINGLES'})",
             border_style=score_color,
             box=box.HEAVY,
+            padding=(1, 2),
         )
     )
 
